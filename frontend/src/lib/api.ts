@@ -172,3 +172,22 @@ export interface YgTask {
   assigned_ids: string[];
   updated: number | null;
 }
+
+export interface AppleReminder {
+  id: number;
+  title: string;
+  notes: string | null;
+  list_name: string;
+  due_at: string | null;
+  priority: number;
+  flagged: boolean;
+  url: string | null;
+  source: "shortcuts" | "caldav";
+  imported_task_id: number | null;
+  synced_at: string;
+}
+
+export interface AppleRemindersResp {
+  items: AppleReminder[];
+  last_sync: { at: string; count: number; source: string } | null;
+}

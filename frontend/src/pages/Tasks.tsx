@@ -1,12 +1,12 @@
 import { useMemo, useState, type FormEvent } from "react";
-import { del, patch, post, type Task, type TaskStatus } from "../lib/api";
+import { del, patch, post, type AppleRemindersResp, type Task, type TaskStatus } from "../lib/api";
 import { useFetch } from "../lib/useFetch";
-import { fmtDate, isOverdue, toLocalInput } from "../lib/format";
+import { fmtDate, isOverdue, relTime, toLocalInput } from "../lib/format";
 import { Modal } from "../components/Modal";
 import { useToast } from "../components/Toast";
 
 const PRIO = { 1: "🔴 Высокий", 2: "🟡 Обычный", 3: "🟢 Низкий" } as const;
-const SOURCE: Record<string, string> = { manual: "", telegram: "из Telegram", ai: "предложено ИИ" };
+const SOURCE: Record<string, string> = { manual: "", telegram: "из Telegram", ai: "предложено ИИ", apple: "из Напоминаний Apple" };
 
 export function TaskRow({ task, onChange }: { task: Task; onChange: (t: Task | null) => void }) {
   const [editing, setEditing] = useState(false);
@@ -132,9 +132,57 @@ function TaskEditor({ task, onClose, onChange }: { task: Task | null; onClose: (
   );
 }
 
+export function AppleReminders({ onImported }: { onImported: (t: Task) => void }) {
+  const { data, error, loading, setData } = useFetch<AppleRemindersResp>("/api/apple/reminders");
+  const toast = useToast();
+
+  async function toTask(id: number) {
+    try {
+      const t = await post<Task>(`/api/apple/reminders/${id}/to-task`);
+      onImported(t);
+      setData((prev) => (prev ? { ...prev, items: prev.items.map((r) => (r.id === id ? { ...r, imported_task_id: t.id } : r)) } : prev));
+      toast("Перенесено в задачи");
+    } catch (e) {
+      toast((e as Error).message, true);
+    }
+  }
+
+  if (loading && !data) return <p className="muted" style={{ padding: 14 }}>Загрузка…</p>;
+  if (error) return <p style={{ padding: 14, color: "var(--danger)" }}>{error}</p>;
+  if (!data || data.items.length === 0)
+    return (
+      <div style={{ padding: 14 }} className="muted small">
+        Напоминаний нет. Apple не отдаёт «Напоминания» по сети, поэтому их присылает Команда (Shortcuts) с iPhone, см. README →
+        «Напоминания Apple». {data?.last_sync && `Последняя синхронизация ${relTime(data.last_sync.at)}.`}
+      </div>
+    );
+  return (
+    <>
+      <div className="small muted" style={{ padding: "10px 14px 0" }}>
+        Синхронизировано {relTime(data.last_sync?.at ?? null)} · {data.items.length} шт.
+      </div>
+      {data.items.map((r) => (
+        <div key={r.id} className="task">
+          <div style={{ flex: 1 }}>
+            <div className={r.priority >= 1 && r.priority <= 3 ? "prio-1" : ""}>{r.title}</div>
+            <div className="meta">
+              {r.list_name && <span>📋 {r.list_name}</span>}
+              {r.due_at && <span className={isOverdue(r.due_at) ? "overdue" : ""}>⏰ {fmtDate(r.due_at)}</span>}
+              {r.notes && <span title={r.notes}>📝</span>}
+            </div>
+          </div>
+          <button className="btn small" disabled={!!r.imported_task_id} onClick={() => toTask(r.id)}>
+            {r.imported_task_id ? "✓ в задачах" : "→ в задачи"}
+          </button>
+        </div>
+      ))}
+    </>
+  );
+}
+
 export default function Tasks() {
   const { data, error, loading, setData, reload } = useFetch<Task[]>("/api/tasks");
-  const [filter, setFilter] = useState<"open" | "doing" | "done" | "all">("open");
+  const [filter, setFilter] = useState<"open" | "doing" | "done" | "all" | "apple">("open");
   const [creating, setCreating] = useState(false);
   const [quick, setQuick] = useState("");
   const toast = useToast();
@@ -142,7 +190,7 @@ export default function Tasks() {
   const tasks = useMemo(() => {
     const all = data ?? [];
     if (filter === "open") return all.filter((t) => t.status !== "done");
-    if (filter === "all") return all;
+    if (filter === "all" || filter === "apple") return all;
     return all.filter((t) => t.status === filter);
   }, [data, filter]);
 
@@ -186,7 +234,8 @@ export default function Tasks() {
             ["open", "Открытые"],
             ["doing", "В работе"],
             ["done", "Сделанные"],
-            ["all", "Все"]
+            ["all", "Все"],
+            ["apple", " Напоминания"]
           ] as const
         ).map(([k, label]) => (
           <button key={k} className={filter === k ? "active" : ""} onClick={() => setFilter(k)}>
@@ -203,11 +252,17 @@ export default function Tasks() {
         </div>
       )}
       <div className="card" style={{ padding: 0 }}>
-        {loading && !data && <p className="muted" style={{ padding: 14 }}>Загрузка…</p>}
-        {!loading && tasks.length === 0 && <p className="muted" style={{ padding: 14 }}>Пусто 🎉</p>}
-        {tasks.map((t) => (
-          <TaskRow key={t.id} task={t} onChange={(nt) => applyChange(t.id, nt)} />
-        ))}
+        {filter === "apple" ? (
+          <AppleReminders onImported={(t) => applyChange(null, t)} />
+        ) : (
+          <>
+            {loading && !data && <p className="muted" style={{ padding: 14 }}>Загрузка…</p>}
+            {!loading && tasks.length === 0 && <p className="muted" style={{ padding: 14 }}>Пусто 🎉</p>}
+            {tasks.map((t) => (
+              <TaskRow key={t.id} task={t} onChange={(nt) => applyChange(t.id, nt)} />
+            ))}
+          </>
+        )}
       </div>
       {creating && <TaskEditor task={null} onClose={() => setCreating(false)} onChange={(t) => applyChange(null, t)} />}
     </div>

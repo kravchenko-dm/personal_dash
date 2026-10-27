@@ -19,7 +19,7 @@ class Task(Base):
     status: Mapped[str] = mapped_column(String(20), default="todo")  # todo | doing | done
     priority: Mapped[int] = mapped_column(Integer, default=2)  # 1 high, 2 normal, 3 low
     due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    source: Mapped[str] = mapped_column(String(30), default="manual")  # manual | telegram | ai
+    source: Mapped[str] = mapped_column(String(30), default="manual")  # manual | telegram | ai | apple
     source_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
     reminded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -121,3 +121,23 @@ class Setting(Base):
 
     key: Mapped[str] = mapped_column(String(100), primary_key=True)
     value: Mapped[dict] = mapped_column(JSON)
+
+
+class AppleReminder(Base):
+    """Snapshot of open Apple Reminders, pushed by an iOS Shortcut (or read over CalDAV for
+    legacy lists). Replaced wholesale on every sync, so no stable Apple id is required."""
+
+    __tablename__ = "apple_reminders"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    key: Mapped[str] = mapped_column(String(64), index=True)  # hash(list,title,due) for dedupe
+    title: Mapped[str] = mapped_column(String(500))
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    list_name: Mapped[str] = mapped_column(String(200), default="")
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    priority: Mapped[int] = mapped_column(Integer, default=0)  # 0 none, 1 high, 5 medium, 9 low (Apple)
+    flagged: Mapped[bool] = mapped_column(Boolean, default=False)
+    url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    source: Mapped[str] = mapped_column(String(20), default="shortcuts")  # shortcuts | caldav
+    imported_task_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

@@ -7,7 +7,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Summary, TelegramChat, TelegramMessage
-from app.services import agenda, summarizer
+from app.services import agenda, apple_reminders, summarizer
 from app.services.tasks import open_tasks_text
 
 log = logging.getLogger(__name__)
@@ -52,6 +52,9 @@ async def build_summary(
         return None
 
     tasks = await open_tasks_text(db)
+    reminders = apple_reminders.reminders_text(await apple_reminders.list_reminders(db))
+    if reminders:
+        tasks += f"\n\nНапоминания Apple:\n{reminders}"
     calendar_text = ""
     try:
         calendar_text = await agenda.upcoming_text(db, days=3)

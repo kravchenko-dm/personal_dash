@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
-import { type BalanceAccount, type CalendarEvent, type Summary, type Task } from "../lib/api";
+import { type AppleRemindersResp, type BalanceAccount, type CalendarEvent, type Summary, type Task } from "../lib/api";
 import { useFetch } from "../lib/useFetch";
-import { fmtMoney } from "../lib/format";
+import { fmtDate, fmtMoney } from "../lib/format";
 import { TaskRow } from "./Tasks";
 import { EventList } from "./Calendar";
 
@@ -10,6 +10,7 @@ export default function Home() {
   const balances = useFetch<BalanceAccount[]>("/api/balances");
   const events = useFetch<{ connected: boolean; events: CalendarEvent[] }>("/api/calendar/events?days=1");
   const summaries = useFetch<Summary[]>("/api/summaries?limit=1");
+  const reminders = useFetch<AppleRemindersResp>("/api/apple/reminders");
 
   const open = (tasks.data ?? []).filter((t) => t.status !== "done");
   const today = open.filter((t) => t.due_at && new Date(t.due_at).getTime() < Date.now() + 86400000);
@@ -38,6 +39,23 @@ export default function Home() {
           <TaskRow key={t.id} task={t} onChange={(nt) => applyChange(t.id, nt)} />
         ))}
       </div>
+
+      {(reminders.data?.items.length ?? 0) > 0 && (
+        <div className="card">
+          <div className="row between">
+            <h3> Напоминания Apple</h3>
+            <Link to="/tasks" className="small">
+              ›
+            </Link>
+          </div>
+          {reminders.data!.items.slice(0, 5).map((r) => (
+            <div key={r.id} className="small" style={{ padding: "3px 0" }}>
+              {r.title}
+              {r.due_at && <span className="muted"> · {fmtDate(r.due_at)}</span>}
+            </div>
+          ))}
+        </div>
+      )}
 
       {(balances.data?.length ?? 0) > 0 && (
         <div className="card">

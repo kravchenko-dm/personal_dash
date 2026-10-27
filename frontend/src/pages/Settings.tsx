@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { post, type Status } from "../lib/api";
+import { getToken, post, type Status } from "../lib/api";
 import { useFetch } from "../lib/useFetch";
 import { currentSubscription, isStandalone, pushSupported, subscribePush, unsubscribePush } from "../lib/push";
 import { useToast } from "../components/Toast";
@@ -91,6 +91,26 @@ export default function Settings({ onLogout }: { onLogout: () => void }) {
           <p className="muted">…</p>
         )}
         <p className="small muted">Ключи задаются в .env на сервере, см. README.</p>
+      </div>
+
+      <div className="card stack">
+        <h3>Напоминания Apple (Команды на iPhone)</h3>
+        <p className="small muted">
+          Токен подставляется в адрес команды: <code>/api/apple/reminders/sync?token=…</code>. Инструкция в README → «Напоминания Apple».
+        </p>
+        <button
+          className="btn"
+          onClick={async () => {
+            try {
+              await navigator.clipboard.writeText(getToken() ?? "");
+              toast("Токен скопирован");
+            } catch {
+              prompt("Скопируйте токен:", getToken() ?? "");
+            }
+          }}
+        >
+          Токен для Команд
+        </button>
       </div>
 
       <button className="btn danger" onClick={onLogout}>

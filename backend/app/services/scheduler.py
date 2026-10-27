@@ -11,7 +11,7 @@ from sqlalchemy import select
 from app.config import get_settings
 from app.db import SessionLocal
 from app.models import Task
-from app.services import agenda, balances, push, summaries, telegram_bot
+from app.services import agenda, apple_reminders, balances, push, summaries, telegram_bot
 from app.services.tasks import open_tasks_text
 
 log = logging.getLogger(__name__)
@@ -60,6 +60,14 @@ async def job_daily_digest() -> None:
         await push.notify_all(db, "Вечерний дайджест", summary.text[:120], url="/summaries", tag="digest")
 
 
+async def job_caldav_reminders() -> None:
+    async with SessionLocal() as db:
+        try:
+            await apple_reminders.sync_caldav(db)
+        except Exception as exc:
+            log.info("caldav reminders sync skipped: %s", exc)
+
+
 async def job_morning_brief() -> None:
     async with SessionLocal() as db:
         tasks = await open_tasks_text(db, limit=10)
@@ -69,6 +77,9 @@ async def job_morning_brief() -> None:
         except Exception as exc:
             log.info("morning brief: calendar skipped: %s", exc)
         text = f"☀️ Доброе утро!\n\nЗадачи:\n{tasks}"
+        reminders = apple_reminders.reminders_text(await apple_reminders.list_reminders(db))
+        if reminders:
+            text += f"\n\nНапоминания Apple:\n{reminders}"
         if cal:
             text += f"\n\nСегодня в календаре:\n{cal}"
         await telegram_bot.send_to_owner(text)
@@ -82,6 +93,9 @@ def start() -> None:
     scheduler.add_job(job_task_reminders, IntervalTrigger(minutes=5), id="reminders", replace_existing=True)
     scheduler.add_job(job_daily_digest, CronTrigger(hour=21, minute=0), id="digest", replace_existing=True)
     scheduler.add_job(job_morning_brief, CronTrigger(hour=8, minute=0), id="morning", replace_existing=True)
+    scheduler.add_job(
+        job_caldav_reminders, IntervalTrigger(hours=1), id="caldav_reminders", replace_existing=True
+    )
     scheduler.start()
     log.info("scheduler started (%s)", get_settings().tz)
 
