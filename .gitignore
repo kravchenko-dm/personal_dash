@@ -1,0 +1,20 @@
+# env / secrets
+.env
+*.env.local
+backend/google_credentials.json
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# node
+node_modules/
+frontend/dist/
+frontend/dev-dist/
+
+# misc
+.DS_Store
+*.log
