@@ -139,6 +139,8 @@ export interface Status {
   push: boolean;
   telegram: boolean;
   claude: boolean;
+  llm_provider: string;
+  llm_model: string;
   google: boolean;
   google_connected: boolean;
   yougile: boolean;

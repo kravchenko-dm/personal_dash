@@ -21,6 +21,13 @@ class Settings(BaseSettings):
     telegram_webhook_secret: str = "change-me"
     telegram_owner_id: int | None = None
 
+    # LLM for summaries. anthropic (default) or any OpenAI-compatible provider, see services/llm.
+    llm_provider: str = (
+        "anthropic"  # anthropic | kimi | deepseek | openrouter | openai | qwen | ollama | custom
+    )
+    llm_api_key: str = ""
+    llm_base_url: str = ""
+    llm_model: str = ""
     anthropic_api_key: str = ""
     claude_model: str = "claude-opus-5-5"
 
@@ -47,8 +54,10 @@ class Settings(BaseSettings):
         return bool(self.vapid_public_key and self.vapid_private_key)
 
     @property
-    def claude_enabled(self) -> bool:
-        return bool(self.anthropic_api_key)
+    def llm_enabled(self) -> bool:
+        from app.services.llm import describe
+
+        return describe(self)["enabled"]
 
     @property
     def google_enabled(self) -> bool:

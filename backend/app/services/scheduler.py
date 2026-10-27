@@ -46,7 +46,7 @@ async def job_task_reminders() -> None:
 
 
 async def job_daily_digest() -> None:
-    if not get_settings().claude_enabled:
+    if not get_settings().llm_enabled:
         return
     async with SessionLocal() as db:
         try:

@@ -7,6 +7,7 @@ from app.db import get_db
 from app.models import Summary
 from app.schemas import SummaryOut, TaskIn, TaskOut
 from app.services import summaries as svc
+from app.services.llm import LLMError
 from app.services.tasks import create_task
 
 router = APIRouter(prefix="/api/summaries", tags=["summaries"], dependencies=[Depends(require_auth)])
@@ -22,7 +23,7 @@ async def list_summaries(limit: int = 20, db: AsyncSession = Depends(get_db)):
 async def make_summary(chat_id: int | None = None, hours: int = 24, db: AsyncSession = Depends(get_db)):
     try:
         return await svc.build_summary(db, chat_id=chat_id, hours=hours)
-    except RuntimeError as exc:
+    except (LLMError, RuntimeError) as exc:
         raise HTTPException(400, str(exc)) from exc
 
 

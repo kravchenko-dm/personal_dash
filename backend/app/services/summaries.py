@@ -66,7 +66,7 @@ async def build_summary(
         period_start=since,
         period_end=until,
         text=result.as_markdown(),
-        proposed_tasks=result.proposed_tasks,
+        proposed_tasks=result.tasks_as_dicts(),
     )
     db.add(row)
     if mark_summarized:

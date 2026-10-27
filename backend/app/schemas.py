@@ -118,6 +118,8 @@ class StatusOut(BaseModel):
     push: bool
     telegram: bool
     claude: bool
+    llm_provider: str
+    llm_model: str
     google: bool
     google_connected: bool
     yougile: bool

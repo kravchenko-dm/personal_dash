@@ -1,12 +1,10 @@
-"""Summaries and task proposals via Claude (structured JSON output)."""
+"""Summaries and task proposals: prompt + schema live here, the model is pluggable (services.llm)."""
 
-import json
 import logging
-from dataclasses import dataclass, field
 
-import anthropic
+from pydantic import BaseModel, Field, ValidationError
 
-from app.config import get_settings
+from app.services.llm import LLMError, get_llm
 
 log = logging.getLogger(__name__)
 
@@ -18,10 +16,33 @@ Telegram-чатов (рабочие и личные), текущий списо�
 Не дублируй уже существующие открытые задачи. Предлагай только конкретные, выполнимые действия с
 понятной формулировкой; если в переписке нет поводов для задач, верни пустой список."""
 
+
+class ProposedTask(BaseModel):
+    title: str
+    reason: str = ""
+    priority: int = Field(default=2, ge=1, le=3)
+    chat: str = ""
+
+
+class SummaryResult(BaseModel):
+    summary: str
+    highlights: list[str] = Field(default_factory=list)
+    proposed_tasks: list[ProposedTask] = Field(default_factory=list)
+
+    def as_markdown(self) -> str:
+        parts = [self.summary.strip()]
+        if self.highlights:
+            parts.append("\n".join(f"• {h}" for h in self.highlights))
+        return "\n\n".join(parts)
+
+    def tasks_as_dicts(self) -> list[dict]:
+        return [t.model_dump() for t in self.proposed_tasks]
+
+
 OUTPUT_SCHEMA = {
     "type": "object",
     "properties": {
-        "summary": {"type": "string", "description": "Саммари в 3-10 предложениях, markdown без заголовков"},
+        "summary": {"type": "string", "description": "Саммари в 3-10 предложениях, без заголовков"},
         "highlights": {
             "type": "array",
             "items": {"type": "string"},
@@ -47,49 +68,22 @@ OUTPUT_SCHEMA = {
 }
 
 
-@dataclass
-class SummaryResult:
-    summary: str
-    highlights: list[str] = field(default_factory=list)
-    proposed_tasks: list[dict] = field(default_factory=list)
-
-    def as_markdown(self) -> str:
-        parts = [self.summary.strip()]
-        if self.highlights:
-            parts.append("\n".join(f"• {h}" for h in self.highlights))
-        return "\n\n".join(parts)
-
-
 async def summarize(
     messages_text: str, open_tasks: str, calendar_text: str = "", period_label: str = ""
 ) -> SummaryResult:
-    s = get_settings()
-    if not s.claude_enabled:
-        raise RuntimeError("ANTHROPIC_API_KEY не задан")
-
-    client = anthropic.AsyncAnthropic(api_key=s.anthropic_api_key)
+    llm = get_llm()
     user_content = (
         f"Период: {period_label or 'последние сообщения'}\n\n"
         f"## Открытые задачи\n{open_tasks}\n\n"
         f"## Календарь\n{calendar_text or 'нет данных'}\n\n"
         f"## Сообщения\n{messages_text}"
     )
-
-    response = await client.beta.messages.create(
-        model=s.claude_model,
-        max_tokens=16000,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_content}],
-        output_config={"effort": "medium", "format": {"type": "json_schema", "schema": OUTPUT_SCHEMA}},
-        betas=["server-side-fallback-2026-07-01"],
-        fallbacks="default",
-    )
-    if response.stop_reason == "refusal":
-        raise RuntimeError("Claude отказался обрабатывать запрос")
-    text = next(b.text for b in response.content if b.type == "text")
-    data = json.loads(text)
-    return SummaryResult(
-        summary=data["summary"],
-        highlights=data.get("highlights", []),
-        proposed_tasks=data.get("proposed_tasks", []),
-    )
+    data = await llm.complete_json(SYSTEM_PROMPT, user_content, OUTPUT_SCHEMA)
+    try:
+        result = SummaryResult.model_validate(data)
+    except ValidationError as exc:
+        raise LLMError(
+            f"{llm.provider}/{llm.model}: ответ не соответствует схеме: {exc.errors()[0]['msg']}"
+        ) from exc
+    log.info("summary via %s/%s: %d proposals", llm.provider, llm.model, len(result.proposed_tasks))
+    return result
