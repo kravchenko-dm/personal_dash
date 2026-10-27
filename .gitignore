@@ -18,3 +18,5 @@ frontend/dev-dist/
 # misc
 .DS_Store
 *.log
+*.egg-info/
+*.tsbuildinfo
