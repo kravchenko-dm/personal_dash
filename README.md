@@ -12,7 +12,7 @@ push-уведомлениями, Telegram-ботом, саммари от Claude
 | Push | Web Push (VAPID). На iOS работает после «На экран Домой» (iOS 16.4+) |
 | Telegram | Бот собирает сообщения из чатов, куда его добавили. Команды `/summary`, `/digest`, `/tasks`, `/add`, `/done`. Предложенные задачи добавляются одной кнопкой |
 | Саммари | Claude (`claude-opus-5-5`) делает выжимку по чатам + предлагает задачи. Вечерний дайджест в 21:00, утренний бриф в 08:00 |
-| Google Calendar | OAuth, выбор календарей, агенда на 1–30 дней |
+| Календарь | Google (OAuth) и iCloud через CalDAV, включая семейный календарь Apple. Выбор календарей, единая агенда на 1–30 дней |
 | YouGile | Доска (kanban), список, дедлайны, по людям. Отметка «готово», создание задач |
 
 ## Стек
@@ -30,7 +30,7 @@ backend/app
   models.py         # таблицы
   routers/          # /api/* эндпоинты
   services/         # tasks, balances, push, summaries, summarizer (Claude),
-                    # telegram_bot, calendar (Google), yougile, scheduler
+                    # telegram_bot, calendar (Google), icloud (CalDAV), agenda, yougile, scheduler
   integrations/     # провайдеры балансов (base, registry, providers/*)
 frontend/src
   App.tsx, pages/*  # Home, Tasks, Balances, Calendar, YouGile, Summaries, Settings
@@ -59,6 +59,9 @@ cp .env.example .env
 4. `ANTHROPIC_API_KEY` — для саммари.
 5. Google: в Google Cloud Console создайте OAuth Client (Web), redirect URI `https://<домен>/api/calendar/oauth/callback`, включите Calendar API.
 6. `YOUGILE_API_KEY` — в YouGile: Компания → Настройки → API.
+7. iCloud (семейный календарь Apple): `ICLOUD_USERNAME` — ваш Apple ID, `ICLOUD_APP_PASSWORD` — пароль приложения
+   (appleid.apple.com → Вход и безопасность → Пароли приложений). Обычный пароль Apple ID не подойдёт.
+   После запуска в разделе «Календарь → Календари» отметьте «Семья»; по умолчанию показываются все календари iCloud.
 
 Запуск:
 

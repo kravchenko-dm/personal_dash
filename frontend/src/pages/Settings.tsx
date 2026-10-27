@@ -83,6 +83,7 @@ export default function Settings({ onLogout }: { onLogout: () => void }) {
             <Chip on={status.telegram} label={status.bot_username ? `Telegram @${status.bot_username}` : "Telegram"} />
             <Chip on={status.claude} label="Claude" />
             <Chip on={status.google_connected} label="Google Calendar" />
+            <Chip on={status.icloud} label="iCloud / Семья" />
             <Chip on={status.yougile} label="YouGile" />
             <Chip on={status.push} label="Web Push" />
           </div>

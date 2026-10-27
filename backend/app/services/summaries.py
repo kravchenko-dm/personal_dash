@@ -7,8 +7,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Summary, TelegramChat, TelegramMessage
-from app.services import calendar as calendar_svc
-from app.services import summarizer
+from app.services import agenda, summarizer
 from app.services.tasks import open_tasks_text
 
 log = logging.getLogger(__name__)
@@ -55,7 +54,7 @@ async def build_summary(
     tasks = await open_tasks_text(db)
     calendar_text = ""
     try:
-        calendar_text = await calendar_svc.upcoming_text(db, days=3)
+        calendar_text = await agenda.upcoming_text(db, days=3)
     except Exception as exc:
         log.info("calendar unavailable for summary: %s", exc)
 

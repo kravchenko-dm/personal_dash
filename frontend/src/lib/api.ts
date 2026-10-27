@@ -124,6 +124,8 @@ export interface TelegramChat {
 export interface CalendarEvent {
   id: string;
   calendar_id: string;
+  calendar?: string;
+  source: "google" | "icloud";
   title: string;
   start: string;
   end: string;
@@ -140,6 +142,7 @@ export interface Status {
   google: boolean;
   google_connected: boolean;
   yougile: boolean;
+  icloud: boolean;
   vapid_public_key: string;
   bot_username: string | null;
 }

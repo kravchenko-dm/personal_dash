@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth import require_auth
 from app.config import get_settings
 from app.db import get_db
+from app.services import agenda, icloud
 from app.services import calendar as svc
 
 router = APIRouter(prefix="/api/calendar", tags=["calendar"])
@@ -13,6 +14,7 @@ router = APIRouter(prefix="/api/calendar", tags=["calendar"])
 
 class SelectedIn(BaseModel):
     ids: list[str]
+    source: str = "google"
 
 
 @router.get("/oauth/start", dependencies=[Depends(require_auth)])
@@ -39,22 +41,43 @@ async def disconnect(db: AsyncSession = Depends(get_db)):
 
 @router.get("/calendars", dependencies=[Depends(require_auth)])
 async def calendars(db: AsyncSession = Depends(get_db)):
-    if not await svc.is_connected(db):
-        raise HTTPException(400, "Google Calendar не подключён")
-    return {"calendars": await svc.list_calendars(db), "selected": await svc.selected_calendars(db)}
+    """All calendars from every connected provider plus the selected ids per provider."""
+    out: list[dict] = []
+    errors: list[str] = []
+    if await svc.is_connected(db):
+        try:
+            out += await svc.list_calendars(db)
+        except Exception as exc:
+            errors.append(f"google: {exc}")
+    if icloud.enabled():
+        try:
+            out += await icloud.list_calendars()
+        except Exception as exc:
+            errors.append(f"icloud: {exc}")
+    if not out and not errors:
+        raise HTTPException(400, "Ни один календарь не подключён")
+    return {
+        "calendars": out,
+        "selected": {
+            "google": await svc.selected_calendars(db),
+            "icloud": await icloud.selected_calendars(db),
+        },
+        "errors": errors,
+    }
 
 
 @router.put("/calendars/selected", dependencies=[Depends(require_auth)])
 async def set_selected(body: SelectedIn, db: AsyncSession = Depends(get_db)):
-    await svc.set_selected_calendars(db, body.ids)
+    if body.source == "icloud":
+        await icloud.set_selected_calendars(db, body.ids)
+    else:
+        await svc.set_selected_calendars(db, body.ids)
     return {"ok": True}
 
 
 @router.get("/events", dependencies=[Depends(require_auth)])
 async def events(days: int = 7, db: AsyncSession = Depends(get_db)):
-    if not await svc.is_connected(db):
-        return {"connected": False, "events": []}
-    try:
-        return {"connected": True, "events": await svc.list_events(db, days=days)}
-    except Exception as exc:
-        raise HTTPException(502, f"Google Calendar: {exc}") from exc
+    if not await agenda.connected(db):
+        return {"connected": False, "events": [], "errors": []}
+    found, errors = await agenda.events(db, days=days)
+    return {"connected": True, "events": found, "errors": errors}

@@ -121,5 +121,6 @@ class StatusOut(BaseModel):
     google: bool
     google_connected: bool
     yougile: bool
+    icloud: bool
     vapid_public_key: str
     bot_username: str | None

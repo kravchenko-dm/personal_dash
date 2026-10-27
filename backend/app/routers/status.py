@@ -5,7 +5,7 @@ from app.auth import require_auth
 from app.config import get_settings
 from app.db import get_db
 from app.schemas import StatusOut
-from app.services import calendar, telegram_bot
+from app.services import calendar, icloud, telegram_bot
 
 router = APIRouter(prefix="/api", tags=["status"])
 
@@ -25,6 +25,7 @@ async def status(db: AsyncSession = Depends(get_db)):
         google=s.google_enabled,
         google_connected=await calendar.is_connected(db),
         yougile=bool(s.yougile_api_key),
+        icloud=icloud.enabled(),
         vapid_public_key=s.vapid_public_key,
         bot_username=telegram_bot.bot_username(),
     )

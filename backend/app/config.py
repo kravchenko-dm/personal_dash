@@ -29,6 +29,9 @@ class Settings(BaseSettings):
 
     yougile_api_key: str = ""
 
+    icloud_username: str = ""
+    icloud_app_password: str = ""
+
     @property
     def public_url(self) -> str:
         if self.app_domain in ("localhost", "127.0.0.1"):

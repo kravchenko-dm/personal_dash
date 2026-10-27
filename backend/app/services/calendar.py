@@ -120,6 +120,7 @@ async def list_calendars(db: AsyncSession) -> list[dict]:
                 "summary": c.get("summaryOverride") or c.get("summary", ""),
                 "color": c.get("backgroundColor"),
                 "primary": c.get("primary", False),
+                "source": "google",
             }
             for c in items
         ]
@@ -150,6 +151,7 @@ async def list_events(db: AsyncSession, days: int = 7, start: datetime | None = 
     def _run():
         service = _service(creds)
         events: list[dict] = []
+        names = {c["id"]: c["summary"] for c in service.calendarList().list().execute().get("items", [])}
         for cal_id in ids:
             resp = (
                 service.events()
@@ -170,6 +172,8 @@ async def list_events(db: AsyncSession, days: int = 7, start: datetime | None = 
                     {
                         "id": e["id"],
                         "calendar_id": cal_id,
+                        "calendar": names.get(cal_id, ""),
+                        "source": "google",
                         "title": e.get("summary", "(без названия)"),
                         "start": start_.get("dateTime") or start_.get("date"),
                         "end": end_.get("dateTime") or end_.get("date"),
@@ -183,16 +187,3 @@ async def list_events(db: AsyncSession, days: int = 7, start: datetime | None = 
         return events
 
     return await asyncio.to_thread(_run)
-
-
-async def upcoming_text(db: AsyncSession, days: int = 3) -> str:
-    if not await is_connected(db):
-        return ""
-    events = await list_events(db, days=days)
-    if not events:
-        return "Событий нет."
-    lines = []
-    for e in events[:40]:
-        when = e["start"][:16].replace("T", " ") if not e["all_day"] else e["start"] + " (весь день)"
-        lines.append(f"- {when}: {e['title']}")
-    return "\n".join(lines)

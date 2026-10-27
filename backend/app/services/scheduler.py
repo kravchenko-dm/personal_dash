@@ -11,7 +11,7 @@ from sqlalchemy import select
 from app.config import get_settings
 from app.db import SessionLocal
 from app.models import Task
-from app.services import balances, calendar, push, summaries, telegram_bot
+from app.services import agenda, balances, push, summaries, telegram_bot
 from app.services.tasks import open_tasks_text
 
 log = logging.getLogger(__name__)
@@ -65,7 +65,7 @@ async def job_morning_brief() -> None:
         tasks = await open_tasks_text(db, limit=10)
         cal = ""
         try:
-            cal = await calendar.upcoming_text(db, days=1)
+            cal = await agenda.upcoming_text(db, days=1)
         except Exception as exc:
             log.info("morning brief: calendar skipped: %s", exc)
         text = f"☀️ Доброе утро!\n\nЗадачи:\n{tasks}"
