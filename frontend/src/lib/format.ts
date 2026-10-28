@@ -33,3 +33,12 @@ export function toLocalInput(iso: string | null): string {
 export function isOverdue(iso: string | null): boolean {
   return !!iso && new Date(iso).getTime() < Date.now();
 }
+
+export const STAGE_LABEL: Record<string, string> = { idea: "идея", dev: "разработка", beta: "бета", prod: "в проде", paused: "на паузе" };
+export const FEATURE_COLUMNS: { key: "idea" | "planned" | "in_progress" | "testing" | "done"; label: string }[] = [
+  { key: "idea", label: "Идеи" },
+  { key: "planned", label: "Запланировано" },
+  { key: "in_progress", label: "В работе" },
+  { key: "testing", label: "Тестирование" },
+  { key: "done", label: "Выпущено" }
+];

@@ -6,7 +6,19 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.db import init_db
-from app.routers import apple, auth, balances, calendar, push, status, summaries, tasks, telegram, yougile
+from app.routers import (
+    apple,
+    auth,
+    balances,
+    calendar,
+    projects,
+    push,
+    status,
+    summaries,
+    tasks,
+    telegram,
+    yougile,
+)
 from app.services import scheduler, telegram_bot
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -36,5 +48,5 @@ if get_settings().app_domain in ("localhost", "127.0.0.1"):
         allow_headers=["*"],
     )
 
-for r in (status, auth, tasks, balances, push, telegram, summaries, calendar, yougile, apple):
+for r in (status, auth, tasks, balances, push, telegram, summaries, calendar, yougile, apple, projects):
     app.include_router(r.router)

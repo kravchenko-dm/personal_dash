@@ -21,7 +21,7 @@ from sqlalchemy import select
 
 from app.config import get_settings
 from app.db import SessionLocal
-from app.models import Summary, Task, TelegramChat, TelegramMessage
+from app.models import Feature, Summary, Task, TelegramChat, TelegramMessage
 from app.schemas import TaskIn
 from app.services import summaries as summaries_svc
 from app.services.tasks import create_task, open_tasks_text
@@ -71,17 +71,20 @@ def _chat_title(message: Message) -> str:
 
 
 def _tasks_keyboard(summary: Summary) -> InlineKeyboardMarkup | None:
-    buttons = [
-        [InlineKeyboardButton(text=f"➕ {t['title'][:40]}", callback_data=f"addtask:{summary.id}:{i}")]
-        for i, t in enumerate(summary.proposed_tasks[:8])
-    ]
+    buttons = []
+    for i, t in enumerate(summary.proposed_tasks[:8]):
+        row = [InlineKeyboardButton(text=f"➕ {t['title'][:40]}", callback_data=f"addtask:{summary.id}:{i}")]
+        if summary.project_id:
+            row.append(InlineKeyboardButton(text="📋 на доску", callback_data=f"addfeat:{summary.id}:{i}"))
+        buttons.append(row)
     return InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
 
 
 def _summary_text(summary: Summary) -> str:
     text = f"📝 Саммари за {summary.period_start.astimezone():%d.%m %H:%M} — {summary.period_end.astimezone():%d.%m %H:%M}\n\n{summary.text}"
     if summary.proposed_tasks:
-        text += "\n\n💡 Предлагаю задачи — нажмите, чтобы добавить:"
+        text += "\n\n💡 Предлагаю задачи — нажмите, чтобы добавить"
+        text += " (или отправить на доску фич проекта):" if summary.project_id else ":"
         for t in summary.proposed_tasks[:8]:
             text += f"\n• {t['title']} — {t.get('reason', '')}"
     return text[:4000]
@@ -201,6 +204,35 @@ async def cb_add_task(query: CallbackQuery) -> None:
             source_ref=f"summary:{summary.id}",
         )
     await query.answer(f"Добавлено: #{task.id}")
+
+
+@router.callback_query(F.data.startswith("addfeat:"))
+async def cb_add_feature(query: CallbackQuery) -> None:
+    if not is_owner(query.from_user.id):
+        await query.answer("Только владелец", show_alert=True)
+        return
+    _, summary_id, idx = query.data.split(":")
+    async with SessionLocal() as db:
+        summary = await db.get(Summary, int(summary_id))
+        if not summary or not summary.project_id or int(idx) >= len(summary.proposed_tasks):
+            await query.answer("Предложение устарело")
+            return
+        from app.services import projects as projects_svc
+
+        proposal = summary.proposed_tasks[int(idx)]
+        feature = Feature(
+            project_id=summary.project_id,
+            title=proposal["title"],
+            description=proposal.get("reason"),
+            priority=int(proposal.get("priority", 2)),
+            status="idea",
+            source="ai",
+            source_ref=f"summary:{summary.id}",
+        )
+        feature.position = await projects_svc.next_position(db, summary.project_id, "idea")
+        db.add(feature)
+        await db.commit()
+    await query.answer("Добавлено на доску фич")
 
 
 # ---------- membership + message collection ----------

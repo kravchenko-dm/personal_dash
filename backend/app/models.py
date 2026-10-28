@@ -77,6 +77,9 @@ class TelegramChat(Base):
     title: Mapped[str] = mapped_column(String(300), default="")
     kind: Mapped[str] = mapped_column(String(20), default="group")  # private | group | supergroup
     collect: Mapped[bool] = mapped_column(Boolean, default=True)
+    project_id: Mapped[int | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -97,6 +100,9 @@ class Summary(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
+    project_id: Mapped[int | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     text: Mapped[str] = mapped_column(Text)
@@ -141,3 +147,62 @@ class AppleReminder(Base):
     source: Mapped[str] = mapped_column(String(20), default="shortcuts")  # shortcuts | caldav
     imported_task_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Project(Base):
+    """One of the services under development (lives on its own VPS)."""
+
+    __tablename__ = "projects"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(100))
+    slug: Mapped[str] = mapped_column(String(60), unique=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    stage: Mapped[str] = mapped_column(String(20), default="dev")  # idea | dev | beta | prod | paused
+    color: Mapped[str] = mapped_column(String(10), default="#63a0ff")
+    repo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    site_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    yougile_board_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    status_note: Mapped[str | None] = mapped_column(Text, nullable=True)  # "what is happening now"
+    status_note_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    archived: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class Feature(Base):
+    """A card on a project's feature board."""
+
+    __tablename__ = "features"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    title: Mapped[str] = mapped_column(String(300))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(20), default="idea"
+    )  # idea | planned | in_progress | testing | done
+    priority: Mapped[int] = mapped_column(Integer, default=2)  # 1 high, 2 normal, 3 low
+    eta: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    link_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    source: Mapped[str] = mapped_column(String(20), default="manual")  # manual | ai
+    source_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    done_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ProjectNote(Base):
+    """Important data about a project: environments, URLs, checklists, contacts. Markdown body."""
+
+    __tablename__ = "project_notes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    title: Mapped[str] = mapped_column(String(200))
+    body: Mapped[str] = mapped_column(Text, default="")
+    pinned: Mapped[bool] = mapped_column(Boolean, default=False)
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)

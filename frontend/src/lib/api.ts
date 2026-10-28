@@ -106,6 +106,7 @@ export interface BalanceAccount {
 export interface Summary {
   id: number;
   chat_id: number | null;
+  project_id: number | null;
   period_start: string;
   period_end: string;
   text: string;
@@ -119,6 +120,7 @@ export interface TelegramChat {
   title: string;
   kind: string;
   collect: boolean;
+  project_id: number | null;
 }
 
 export interface CalendarEvent {
@@ -190,4 +192,61 @@ export interface AppleReminder {
 export interface AppleRemindersResp {
   items: AppleReminder[];
   last_sync: { at: string; count: number; source: string } | null;
+}
+
+export type Stage = "idea" | "dev" | "beta" | "prod" | "paused";
+export type FeatureStatus = "idea" | "planned" | "in_progress" | "testing" | "done";
+
+export interface Project {
+  id: number;
+  name: string;
+  slug: string;
+  description: string | null;
+  stage: Stage;
+  color: string;
+  repo_url: string | null;
+  site_url: string | null;
+  yougile_board_id: string | null;
+  status_note: string | null;
+  status_note_at: string | null;
+  archived: boolean;
+  created_at: string;
+  updated_at: string;
+  feature_counts: Record<FeatureStatus, number>;
+  chat_count: number;
+}
+
+export interface Feature {
+  id: number;
+  project_id: number;
+  title: string;
+  description: string | null;
+  status: FeatureStatus;
+  priority: 1 | 2 | 3;
+  eta: string | null;
+  position: number;
+  link_url: string | null;
+  source: string;
+  created_at: string;
+  updated_at: string;
+  done_at: string | null;
+}
+
+export interface ProjectNote {
+  id: number;
+  project_id: number;
+  title: string;
+  body: string;
+  pinned: boolean;
+  position: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectDetail {
+  project: Project;
+  features: Feature[];
+  notes: ProjectNote[];
+  chats: TelegramChat[];
+  summaries: Summary[];
 }

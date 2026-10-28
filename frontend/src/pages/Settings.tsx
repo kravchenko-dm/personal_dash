@@ -56,6 +56,10 @@ export default function Settings({ onLogout }: { onLogout: () => void }) {
         <span>📝 Саммари и чаты Telegram</span>
         <span className="muted">›</span>
       </Link>
+      <Link to="/yougile" className="card clickable row between" style={{ display: "flex" }}>
+        <span>🗂 YouGile</span>
+        <span className="muted">›</span>
+      </Link>
 
       <div className="card stack">
         <h3>Push-уведомления</h3>

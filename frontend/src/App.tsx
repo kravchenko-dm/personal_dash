@@ -10,13 +10,15 @@ import Calendar from "./pages/Calendar";
 import YouGile from "./pages/YouGile";
 import Summaries from "./pages/Summaries";
 import Settings from "./pages/Settings";
+import Projects from "./pages/Projects";
+import ProjectPage from "./pages/ProjectPage";
 
 const NAV = [
   { to: "/", ic: "🏠", label: "Главная" },
   { to: "/tasks", ic: "✅", label: "Задачи" },
   { to: "/balances", ic: "💳", label: "Балансы" },
+  { to: "/projects", ic: "🚀", label: "Проекты" },
   { to: "/calendar", ic: "📅", label: "Календарь" },
-  { to: "/yougile", ic: "🗂", label: "YouGile" },
   { to: "/settings", ic: "⚙️", label: "Ещё" }
 ];
 
@@ -40,6 +42,8 @@ export default function App() {
           <Route path="/balances" element={<Balances />} />
           <Route path="/calendar" element={<Calendar />} />
           <Route path="/yougile" element={<YouGile />} />
+          <Route path="/projects" element={<Projects />} />
+          <Route path="/projects/:id" element={<ProjectPage />} />
           <Route path="/summaries" element={<Summaries />} />
           <Route
             path="/settings"

@@ -97,6 +97,7 @@ class SummaryOut(BaseModel):
 
     id: int
     chat_id: int | None
+    project_id: int | None = None
     period_start: datetime
     period_end: datetime
     text: str
@@ -112,6 +113,7 @@ class TelegramChatOut(BaseModel):
     title: str
     kind: str
     collect: bool
+    project_id: int | None = None
 
 
 class StatusOut(BaseModel):
