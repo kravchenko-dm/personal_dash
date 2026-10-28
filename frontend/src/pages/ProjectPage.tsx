@@ -2,12 +2,13 @@ import { useMemo, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { del, patch, post, put, type Feature, type FeatureStatus, type Project, type ProjectDetail, type ProjectNote, type Summary, type TelegramChat } from "../lib/api";
 import { useFetch } from "../lib/useFetch";
-import { FEATURE_COLUMNS, fmtDate, relTime, STAGE_LABEL, toLocalInput } from "../lib/format";
+import { FEATURE_COLUMNS, fmtDate, HEALTH_COLOR, relTime, STAGE_LABEL, toLocalInput } from "../lib/format";
 import { Modal } from "../components/Modal";
 import { useToast } from "../components/Toast";
 import { ProjectForm } from "./Projects";
+import Monitoring from "./Monitoring";
 
-type Tab = "board" | "notes" | "chats" | "info";
+type Tab = "board" | "monitoring" | "notes" | "chats" | "info";
 const PRIO_MARK = { 1: "🔴", 2: "", 3: "🟢" } as const;
 
 function FeatureEditor({
@@ -428,7 +429,7 @@ export default function ProjectPage() {
   const { id } = useParams();
   const navigate = useNavigate();
   const { data, error, loading, setData, reload } = useFetch<ProjectDetail>(`/api/projects/${id}`, [id]);
-  const [tab, setTab] = useState<Tab>("board");
+  const [tab, setTab] = useState<Tab>(new URLSearchParams(window.location.search).get("tab") === "monitoring" ? "monitoring" : "board");
   const [editing, setEditing] = useState(false);
   const [statusDraft, setStatusDraft] = useState<string | null>(null);
   const toast = useToast();
@@ -472,6 +473,9 @@ export default function ProjectPage() {
           <h1 style={{ borderLeft: `4px solid ${p.color}`, paddingLeft: 10 }}>{p.name}</h1>
           <div className="row wrap small muted" style={{ gap: 10 }}>
             <span className="chip">{STAGE_LABEL[p.stage]}</span>
+            <span className="chip" style={{ color: HEALTH_COLOR[p.health] }}>
+              ● {p.health === "ok" ? "всё работает" : `${p.open_incidents} инцид.`}
+            </span>
             {p.site_url && (
               <a href={p.site_url} target="_blank" rel="noreferrer">
                 сайт
@@ -516,6 +520,7 @@ export default function ProjectPage() {
         {(
           [
             ["board", `Доска · ${data.features.filter((f) => f.status !== "done").length}`],
+            ["monitoring", p.open_incidents ? `Мониторинг · ${p.open_incidents}` : "Мониторинг"],
             ["notes", `Заметки · ${data.notes.length}`],
             ["chats", `Чаты · ${data.chats.length}`],
             ["info", "О проекте"]
@@ -530,13 +535,14 @@ export default function ProjectPage() {
       {tab === "board" && (
         <Board projectId={p.id} features={data.features} setFeatures={(fn) => setData((prev) => (prev ? { ...prev, features: fn(prev.features) } : prev))} />
       )}
+      {tab === "monitoring" && <Monitoring projectId={p.id} />}
       {tab === "notes" && <Notes projectId={p.id} notes={data.notes} setNotes={(fn) => setData((prev) => (prev ? { ...prev, notes: fn(prev.notes) } : prev))} />}
       {tab === "chats" && <Chats projectId={p.id} chats={data.chats} summaries={data.summaries} onChange={reload} />}
       {tab === "info" && (
         <div className="card stack">
           <p>{p.description || <span className="muted">Описания нет.</span>}</p>
           <p className="small muted">Создан {fmtDate(p.created_at)} · обновлён {relTime(p.updated_at)}</p>
-          <p className="small muted">Мониторинг, статус серверов и бэкапы появятся на этой странице на следующих этапах.</p>
+          <p className="small muted">Бэкапы появятся на этой странице на следующем этапе.</p>
           <div className="row">
             <button className="btn" onClick={() => setEditing(true)}>
               Редактировать

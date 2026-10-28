@@ -1,0 +1,68 @@
+"""Endpoints used by dash-agent on the servers (token auth, not JWT) + installer download."""
+
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi.responses import PlainTextResponse
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import get_settings
+from app.db import get_db
+from app.models import AgentCommand, Server
+from app.services import monitoring
+
+router = APIRouter(prefix="/api/agent", tags=["agent"])
+_HERE = Path(__file__).resolve()
+AGENT_DIR = next(
+    (d for d in (_HERE.parents[3] / "agent", _HERE.parents[2] / "agent") if d.exists()),
+    _HERE.parents[3] / "agent",
+)  # repo checkout: <root>/agent; docker image: /app/agent
+
+
+async def _server(db: AsyncSession, token: str | None) -> Server:
+    server = await monitoring.server_by_token(db, token or "")
+    if not server:
+        raise HTTPException(401, "bad agent token")
+    return server
+
+
+@router.post("/report")
+async def report(
+    request: Request, x_agent_token: str | None = Header(default=None), db: AsyncSession = Depends(get_db)
+):
+    server = await _server(db, x_agent_token)
+    payload = await request.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "report must be a JSON object")
+    commands = await monitoring.ingest_report(db, server, payload)
+    return {"ok": True, "commands": [{"id": c.id, "kind": c.kind, "args": c.args} for c in commands]}
+
+
+@router.post("/commands/{command_id}/result")
+async def command_result(
+    command_id: int,
+    request: Request,
+    x_agent_token: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    server = await _server(db, x_agent_token)
+    cmd = await db.get(AgentCommand, command_id)
+    if not cmd or cmd.server_id != server.id:
+        raise HTTPException(404, "unknown command")
+    await monitoring.finish_command(db, cmd, await request.json())
+    return {"ok": True}
+
+
+@router.get("/script", response_class=PlainTextResponse)
+async def script():
+    path = AGENT_DIR / "dash_agent.py"
+    if not path.exists():
+        raise HTTPException(404, "agent script not bundled")
+    return path.read_text()
+
+
+@router.get("/install", response_class=PlainTextResponse)
+async def install(token: str = Query(min_length=10), db: AsyncSession = Depends(get_db)):
+    await _server(db, token)  # only a valid token gets an installer
+    tmpl = (AGENT_DIR / "install.sh.tmpl").read_text()
+    return tmpl.replace("{{URL}}", get_settings().public_url).replace("{{TOKEN}}", token)

@@ -3,10 +3,27 @@ from app.services.apple_reminders import ReminderIn
 
 SNAPSHOT = {
     "items": [
-        {"title": "Купить корм коту", "list": "Семья", "due": "28.10.2026 18:00", "priority": "High", "completed": "No"},
-        {"title": "Позвонить маме", "list": "Личное", "due": "", "priority": "", "completed": False, "notes": "после 19"},
+        {
+            "title": "Купить корм коту",
+            "list": "Семья",
+            "due": "28.10.2026 18:00",
+            "priority": "High",
+            "completed": "No",
+        },
+        {
+            "title": "Позвонить маме",
+            "list": "Личное",
+            "due": "",
+            "priority": "",
+            "completed": False,
+            "notes": "после 19",
+        },
         {"title": "Сделано", "list": "Личное", "completed": "Yes"},
-        {"title": "Купить корм коту", "list": "Семья", "due": "2026-10-28T18:00:00+03:00"},  # dup (different tz parse)
+        {
+            "title": "Купить корм коту",
+            "list": "Семья",
+            "due": "2026-10-28T18:00:00+03:00",
+        },  # dup (different tz parse)
     ]
 }
 
@@ -47,13 +64,18 @@ async def test_sync_list_and_convert(client, auth):
 
 
 async def test_sync_accepts_single_dict_and_rejects_unauth(client, auth):
-    assert (await client.post("/api/apple/reminders/sync", json={"items": {"title": "одно"}}, headers=auth)).json()["stored"] == 1
+    assert (
+        await client.post("/api/apple/reminders/sync", json={"items": {"title": "одно"}}, headers=auth)
+    ).json()["stored"] == 1
     assert (await client.post("/api/apple/reminders/sync", json={"items": []})).status_code == 401
 
 
 def test_reminders_text_formatting():
     from app.models import AppleReminder
 
-    rows = [AppleReminder(title="A", list_name="Семья", due_at=None), AppleReminder(title="B", list_name="", due_at=None)]
+    rows = [
+        AppleReminder(title="A", list_name="Семья", due_at=None),
+        AppleReminder(title="B", list_name="", due_at=None),
+    ]
     text = apple_reminders.reminders_text(rows)
     assert text == "• [Семья] A\n• B"

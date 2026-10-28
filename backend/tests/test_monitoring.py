@@ -1,0 +1,260 @@
+import importlib.util
+import json
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import httpx
+
+from app.db import SessionLocal
+from app.models import Server
+from app.services import alerts, monitoring
+
+AGENT = Path(__file__).resolve().parents[2] / "agent" / "dash_agent.py"
+
+
+def load_agent():
+    spec = importlib.util.spec_from_file_location("dash_agent", AGENT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+async def make_project_and_server(client, auth):
+    pid = (await client.post("/api/projects", json={"name": "Svc"}, headers=auth)).json()["id"]
+    created = await client.post(f"/api/projects/{pid}/servers", json={"name": "vps-1"}, headers=auth)
+    assert created.status_code == 201, created.text
+    return pid, created.json()
+
+
+def fake_report(**over):
+    base = {
+        "agent_version": "0.2.0",
+        "hostname": "vps-1",
+        "pretty_os": "Ubuntu 24.04",
+        "metrics": {"load1": 0.5, "mem_pct": 40.0, "disks": [{"path": "/", "pct": 30.0}]},
+        "services": [{"name": "api", "kind": "systemd", "status": "running", "restarts": 0}],
+        "failed_units": [],
+    }
+    base.update(over)
+    return base
+
+
+async def test_server_token_and_install_script(client, auth):
+    pid, server = await make_project_and_server(client, auth)
+    token = server["token"]
+    assert token.startswith("dash_") and "api/agent/install?token=" in server["install_command"]
+
+    # token is stored hashed and listing does not leak it
+    listed = (await client.get(f"/api/projects/{pid}/servers", headers=auth)).json()
+    assert "token" not in listed[0] and listed[0]["online"] is False
+
+    install = await client.get(f"/api/agent/install?token={token}")
+    assert (
+        install.status_code == 200
+        and token in install.text
+        and "systemctl enable --now dash-agent" in install.text
+    )
+    assert (await client.get("/api/agent/install?token=dash_wrongwrongwrong")).status_code == 401
+    script = await client.get("/api/agent/script")
+    assert script.status_code == 200 and "def build_report" in script.text
+
+    assert (
+        await client.post("/api/agent/report", json={}, headers={"X-Agent-Token": "nope"})
+    ).status_code == 401
+
+
+async def test_report_metrics_incidents_and_commands(client, auth):
+    pid, server = await make_project_and_server(client, auth)
+    hdr = {"X-Agent-Token": server["token"]}
+
+    r = await client.post("/api/agent/report", json=fake_report(), headers=hdr)
+    assert r.status_code == 200 and r.json()["commands"] == []
+    s = (await client.get(f"/api/projects/{pid}/servers", headers=auth)).json()[0]
+    assert s["online"] and s["hostname"] == "vps-1" and s["last_report"]["services"][0]["name"] == "api"
+    metrics = (await client.get(f"/api/projects/{pid}/servers/{s['id']}/metrics", headers=auth)).json()[
+        "samples"
+    ]
+    assert len(metrics) == 1 and metrics[0]["disk_pct"] == 30.0
+
+    # disk high + service failed -> two incidents, project health critical
+    bad = fake_report(
+        metrics={"load1": 1, "mem_pct": 50, "disks": [{"path": "/", "pct": 91.0}]},
+        services=[{"name": "api", "kind": "systemd", "status": "failed", "restarts": 1}],
+    )
+    await client.post("/api/agent/report", json=bad, headers=hdr)
+    incidents = (await client.get(f"/api/projects/{pid}/incidents", headers=auth)).json()
+    kinds = sorted(i["kind"] for i in incidents if i["resolved_at"] is None)
+    assert kinds == ["disk_high", "service_down"]
+    proj = (await client.get("/api/projects", headers=auth)).json()[0]
+    assert proj["health"] == "critical" and proj["open_incidents"] == 2
+
+    # same bad report again -> no duplicate incidents
+    await client.post("/api/agent/report", json=bad, headers=hdr)
+    assert len((await client.get(f"/api/projects/{pid}/incidents", headers=auth)).json()) == 2
+
+    # recovery resolves both
+    await client.post("/api/agent/report", json=fake_report(), headers=hdr)
+    incidents = (await client.get(f"/api/projects/{pid}/incidents", headers=auth)).json()
+    assert all(i["resolved_at"] for i in incidents)
+    assert (await client.get("/api/incidents", headers=auth)).json() == []
+
+    # command queue roundtrip
+    cmd = (
+        await client.post(
+            f"/api/projects/{pid}/servers/{s['id']}/commands",
+            json={"kind": "logs", "args": {"service": "api"}},
+            headers=auth,
+        )
+    ).json()
+    assert cmd["status"] == "queued"
+    handed = (await client.post("/api/agent/report", json=fake_report(), headers=hdr)).json()["commands"]
+    assert handed == [{"id": cmd["id"], "kind": "logs", "args": {"service": "api"}}]
+    assert (await client.post("/api/agent/report", json=fake_report(), headers=hdr)).json()[
+        "commands"
+    ] == []  # sent once
+    res = await client.post(
+        f"/api/agent/commands/{cmd['id']}/result", json={"ok": True, "output": "line1\nline2"}, headers=hdr
+    )
+    assert res.status_code == 200
+    done = (
+        await client.get(f"/api/projects/{pid}/servers/{s['id']}/commands/{cmd['id']}", headers=auth)
+    ).json()
+    assert done["status"] == "done" and done["output"] == "line1\nline2"
+
+
+async def test_failed_units_and_restart_loop(client, auth):
+    pid, server = await make_project_and_server(client, auth)
+    hdr = {"X-Agent-Token": server["token"]}
+    await client.post("/api/agent/report", json=fake_report(failed_units=["cron.service"]), headers=hdr)
+    inc = (await client.get(f"/api/projects/{pid}/incidents", headers=auth)).json()
+    assert inc[0]["kind"] == "unit_failed" and "cron.service" in inc[0]["message"]
+    await client.post("/api/agent/report", json=fake_report(), headers=hdr)
+    assert (await client.get(f"/api/projects/{pid}/incidents", headers=auth)).json()[0]["resolved_at"]
+
+    await client.post(
+        "/api/agent/report",
+        json=fake_report(services=[{"name": "api", "kind": "docker", "status": "running", "restarts": 1}]),
+        headers=hdr,
+    )
+    await client.post(
+        "/api/agent/report",
+        json=fake_report(services=[{"name": "api", "kind": "docker", "status": "running", "restarts": 6}]),
+        headers=hdr,
+    )
+    kinds = [
+        i["kind"]
+        for i in (await client.get(f"/api/projects/{pid}/incidents", headers=auth)).json()
+        if not i["resolved_at"]
+    ]
+    assert kinds == ["restart_loop"]
+    # restarts stop growing -> resolved
+    await client.post(
+        "/api/agent/report",
+        json=fake_report(services=[{"name": "api", "kind": "docker", "status": "running", "restarts": 6}]),
+        headers=hdr,
+    )
+    assert (await client.get("/api/incidents", headers=auth)).json() == []
+
+
+async def test_silent_agent_detection(client, auth):
+    pid, server = await make_project_and_server(client, auth)
+    await client.post("/api/agent/report", json=fake_report(), headers={"X-Agent-Token": server["token"]})
+    async with SessionLocal() as db:
+        row = await db.get(Server, server["id"])
+        row.last_seen_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+        await db.commit()
+        await monitoring.check_silent_agents(db)
+    inc = (await client.get("/api/incidents", headers=auth)).json()
+    assert len(inc) == 1 and inc[0]["kind"] == "agent_silent"
+    # agent comes back -> resolved
+    await client.post("/api/agent/report", json=fake_report(), headers={"X-Agent-Token": server["token"]})
+    assert (await client.get("/api/incidents", headers=auth)).json() == []
+
+
+async def test_http_monitor_checks(client, auth, monkeypatch):
+    pid = (await client.post("/api/projects", json={"name": "Site"}, headers=auth)).json()["id"]
+    state = {"code": 200}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(state["code"], text="hello world")
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+
+    m = (
+        await client.post(
+            f"/api/projects/{pid}/monitors",
+            json={"name": "Главная", "url": "https://example.org/", "expect_text": "hello"},
+            headers=auth,
+        )
+    ).json()
+    assert m["last_ok"] is True and m["last_status"] == 200 and m["consecutive_failures"] == 0
+
+    state["code"] = 503
+    first = (await client.post(f"/api/projects/{pid}/monitors/{m['id']}/check", headers=auth)).json()
+    assert first["last_ok"] is False and first["consecutive_failures"] == 1
+    assert (
+        await client.get("/api/incidents", headers=auth)
+    ).json() == []  # one failure is not an incident yet
+    second = (await client.post(f"/api/projects/{pid}/monitors/{m['id']}/check", headers=auth)).json()
+    assert second["consecutive_failures"] == 2
+    inc = (await client.get("/api/incidents", headers=auth)).json()
+    assert len(inc) == 1 and inc[0]["kind"] == "http_down" and "503" in inc[0]["message"]
+
+    state["code"] = 200
+    await client.post(f"/api/projects/{pid}/monitors/{m['id']}/check", headers=auth)
+    assert (await client.get("/api/incidents", headers=auth)).json() == []
+    up = (await client.get(f"/api/projects/{pid}/monitors/{m['id']}/uptime", headers=auth)).json()
+    assert up["uptime_pct"] == 50.0 and len(up["samples"]) == 4
+
+    # expect_text mismatch is a failure too
+    upd = {"name": "Главная", "url": "https://example.org/", "expect_text": "absent"}
+    await client.put(f"/api/projects/{pid}/monitors/{m['id']}", json=upd, headers=auth)
+    chk = (await client.post(f"/api/projects/{pid}/monitors/{m['id']}/check", headers=auth)).json()
+    assert chk["last_ok"] is False and "absent" in chk["last_error"]
+
+
+async def test_manual_resolve_and_health_warning(client, auth):
+    pid = (await client.post("/api/projects", json={"name": "W"}, headers=auth)).json()["id"]
+    async with SessionLocal() as db:
+        await alerts.open_incident(db, pid, "disk_high", "x", "диск", "warning")
+        await db.commit()
+    proj = (await client.get("/api/projects", headers=auth)).json()[0]
+    assert proj["health"] == "warning"
+    inc = (await client.get("/api/incidents", headers=auth)).json()[0]
+    resolved = (await client.post(f"/api/projects/{pid}/incidents/{inc['id']}/resolve", headers=auth)).json()
+    assert resolved["resolved_at"]
+    assert (await client.get("/api/projects", headers=auth)).json()[0]["health"] == "ok"
+
+
+def test_agent_script_collects_and_executes(tmp_path):
+    agent = load_agent()
+    cfg = {
+        "url": "http://x",
+        "token": "t",
+        "services": [
+            {"name": "nope", "kind": "systemd", "unit": "definitely-missing.service"},
+            {"name": "self", "kind": "process", "match": "pytest"},
+        ],
+        "discover_docker": False,
+    }
+    report = agent.build_report(cfg)
+    assert report["metrics"]["mem_total"] > 0 and report["metrics"]["disks"][0]["path"] == "/"
+    names = {s["name"]: s for s in report["services"]}
+    assert names["self"]["status"] == "running"
+    assert names["nope"]["status"] in ("stopped", "unknown", "failed")
+    json.dumps(report)  # serialisable
+
+    assert agent.execute(cfg, {"kind": "ping"})["ok"] is True
+    assert agent.execute(cfg, {"kind": "restart", "args": {"service": "ghost"}})["ok"] is False
+    assert agent.execute(cfg, {"kind": "script", "args": {"name": "../etc/passwd"}})["ok"] is False
+    assert agent.execute(cfg, {"kind": "weird"})["ok"] is False
+
+    # version detection: file marker, then mtime fallback for non-git dirs
+    (tmp_path / "VERSION").write_text("1.4.2\n")
+    assert agent.service_version({"version_file": str(tmp_path / "VERSION")}) == {
+        "kind": "file",
+        "value": "1.4.2",
+    }
+    (tmp_path / "app.py").write_text("print(1)")
+    assert agent.service_version({"path": str(tmp_path)})["kind"] == "mtime"

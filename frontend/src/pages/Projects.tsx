@@ -2,7 +2,7 @@ import { useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { post, put, type Project, type Stage } from "../lib/api";
 import { useFetch } from "../lib/useFetch";
-import { relTime, STAGE_LABEL } from "../lib/format";
+import { HEALTH_COLOR, relTime, STAGE_LABEL } from "../lib/format";
 import { Modal } from "../components/Modal";
 import { useToast } from "../components/Toast";
 
@@ -114,7 +114,9 @@ export function ProjectCard({ p }: { p: Project }) {
   return (
     <Link to={`/projects/${p.id}`} className="card clickable" style={{ display: "block", color: "inherit", borderLeft: `4px solid ${p.color}` }}>
       <div className="row between">
-        <strong>{p.name}</strong>
+        <strong>
+          <span style={{ color: HEALTH_COLOR[p.health] }}>●</span> {p.name}
+        </strong>
         <span className="chip">{STAGE_LABEL[p.stage]}</span>
       </div>
       {p.status_note ? (
@@ -129,6 +131,7 @@ export function ProjectCard({ p }: { p: Project }) {
         <span>🔧 {open} в работе</span>
         <span>✅ {p.feature_counts.done ?? 0}</span>
         {p.chat_count > 0 && <span>💬 {p.chat_count}</span>}
+        {p.open_incidents > 0 && <span style={{ color: HEALTH_COLOR[p.health] }}>⚠ {p.open_incidents}</span>}
       </div>
     </Link>
   );

@@ -214,6 +214,8 @@ export interface Project {
   updated_at: string;
   feature_counts: Record<FeatureStatus, number>;
   chat_count: number;
+  health: "ok" | "warning" | "critical";
+  open_incidents: number;
 }
 
 export interface Feature {
@@ -249,4 +251,93 @@ export interface ProjectDetail {
   notes: ProjectNote[];
   chats: TelegramChat[];
   summaries: Summary[];
+}
+
+export interface ServerService {
+  name: string;
+  kind: "systemd" | "docker" | "process";
+  status: string;
+  detail?: string;
+  restarts?: number;
+  started_at?: string | null;
+  discovered?: boolean;
+  version?: { kind: string; value: string; branch?: string; date?: string };
+  http?: { ok: boolean; status: number | null; latency_ms: number; error?: string };
+  image?: string;
+}
+
+export interface ServerReport {
+  metrics: {
+    load1: number;
+    load5: number;
+    cpus: number;
+    mem_total: number;
+    mem_used: number;
+    mem_pct: number;
+    uptime: number;
+    disks: { path: string; total: number; used: number; pct: number }[];
+  };
+  services: ServerService[];
+  failed_units: string[];
+}
+
+export interface Server {
+  id: number;
+  project_id: number;
+  name: string;
+  hostname: string | null;
+  os: string | null;
+  agent_version: string | null;
+  last_seen_at: string | null;
+  last_report: ServerReport | null;
+  disk_alert_pct: number;
+  silence_alert_min: number;
+  created_at: string;
+  online: boolean;
+  token?: string;
+  install_command?: string;
+}
+
+export interface AgentCommand {
+  id: number;
+  server_id: number;
+  kind: string;
+  args: Record<string, unknown>;
+  status: "queued" | "sent" | "done" | "failed";
+  ok: boolean | null;
+  output: string | null;
+  created_at: string;
+  finished_at: string | null;
+}
+
+export interface Monitor {
+  id: number;
+  project_id: number;
+  name: string;
+  url: string;
+  method: string;
+  expect_status: number;
+  expect_text: string | null;
+  timeout_s: number;
+  interval_s: number;
+  enabled: boolean;
+  last_ok: boolean | null;
+  last_status: number | null;
+  last_latency_ms: number | null;
+  last_error: string | null;
+  last_checked_at: string | null;
+  consecutive_failures: number;
+}
+
+export interface Incident {
+  id: number;
+  project_id: number;
+  server_id: number | null;
+  monitor_id: number | null;
+  kind: string;
+  key: string;
+  severity: "warning" | "critical";
+  message: string;
+  started_at: string;
+  resolved_at: string | null;
 }

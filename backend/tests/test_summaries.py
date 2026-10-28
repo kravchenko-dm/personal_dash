@@ -9,7 +9,15 @@ async def test_summary_flow(client, auth, monkeypatch):
     async with SessionLocal() as db:
         db.add(TelegramChat(chat_id=-100, title="Проект X", kind="supergroup"))
         now = datetime.now(timezone.utc)
-        db.add(TelegramMessage(chat_id=-100, message_id=1, sender="Аня", text="Нужно отправить отчёт в пятницу", sent_at=now - timedelta(hours=1)))
+        db.add(
+            TelegramMessage(
+                chat_id=-100,
+                message_id=1,
+                sender="Аня",
+                text="Нужно отправить отчёт в пятницу",
+                sent_at=now - timedelta(hours=1),
+            )
+        )
         await db.commit()
 
     async def fake_summarize(messages_text, open_tasks, calendar_text="", period_label=""):
@@ -17,7 +25,9 @@ async def test_summary_flow(client, auth, monkeypatch):
         return summarizer.SummaryResult(
             summary="Обсуждали отчёт.",
             highlights=["Отчёт в пятницу"],
-            proposed_tasks=[{"title": "Отправить отчёт", "reason": "Аня просила", "priority": 1, "chat": "Проект X"}],
+            proposed_tasks=[
+                {"title": "Отправить отчёт", "reason": "Аня просила", "priority": 1, "chat": "Проект X"}
+            ],
         )
 
     monkeypatch.setattr(summarizer, "summarize", fake_summarize)
@@ -42,5 +52,7 @@ async def test_summary_without_messages_returns_null(client, auth):
 
 
 async def test_webhook_rejects_bad_secret(client):
-    resp = await client.post("/api/telegram/webhook", json={}, headers={"X-Telegram-Bot-Api-Secret-Token": "wrong"})
+    resp = await client.post(
+        "/api/telegram/webhook", json={}, headers={"X-Telegram-Bot-Api-Secret-Token": "wrong"}
+    )
     assert resp.status_code == 403

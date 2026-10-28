@@ -42,3 +42,26 @@ export const FEATURE_COLUMNS: { key: "idea" | "planned" | "in_progress" | "testi
   { key: "testing", label: "Тестирование" },
   { key: "done", label: "Выпущено" }
 ];
+
+export function fmtBytes(n: number): string {
+  if (n >= 1e12) return (n / 1e12).toFixed(1) + " TB";
+  if (n >= 1e9) return (n / 1e9).toFixed(1) + " GB";
+  if (n >= 1e6) return (n / 1e6).toFixed(0) + " MB";
+  return (n / 1e3).toFixed(0) + " KB";
+}
+
+export function fmtUptime(sec: number): string {
+  const d = Math.floor(sec / 86400);
+  const h = Math.floor((sec % 86400) / 3600);
+  return d > 0 ? `${d} д ${h} ч` : `${h} ч ${Math.floor((sec % 3600) / 60)} м`;
+}
+
+export const HEALTH_COLOR = { ok: "var(--ok)", warning: "var(--warn)", critical: "var(--danger)" } as const;
+export const INCIDENT_KIND: Record<string, string> = {
+  http_down: "сайт не отвечает",
+  agent_silent: "агент молчит",
+  disk_high: "диск заполнен",
+  service_down: "сервис упал",
+  unit_failed: "юнит failed",
+  restart_loop: "цикл перезапусков"
+};

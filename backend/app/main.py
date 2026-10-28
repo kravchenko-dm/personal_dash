@@ -7,10 +7,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.db import init_db
 from app.routers import (
+    agent,
     apple,
     auth,
     balances,
     calendar,
+    monitoring,
     projects,
     push,
     status,
@@ -48,5 +50,19 @@ if get_settings().app_domain in ("localhost", "127.0.0.1"):
         allow_headers=["*"],
     )
 
-for r in (status, auth, tasks, balances, push, telegram, summaries, calendar, yougile, apple, projects):
+for r in (
+    status,
+    auth,
+    tasks,
+    balances,
+    push,
+    telegram,
+    summaries,
+    calendar,
+    yougile,
+    apple,
+    projects,
+    monitoring,
+    agent,
+):
     app.include_router(r.router)

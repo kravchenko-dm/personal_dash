@@ -49,7 +49,15 @@ async def test_openai_compat_request_and_json_mode_fallback(monkeypatch):
         assert "JSON-схеме" in body["messages"][0]["content"]
         return httpx.Response(
             200,
-            json={"choices": [{"message": {"content": '```json\n{"summary": "ок", "highlights": [], "proposed_tasks": []}\n```'}}]},
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": '```json\n{"summary": "ок", "highlights": [], "proposed_tasks": []}\n```'
+                        }
+                    }
+                ]
+            },
         )
 
     real = httpx.AsyncClient
@@ -75,7 +83,11 @@ async def test_summarize_validates_schema(monkeypatch):
 
     class Good(Bad):
         async def complete_json(self, system, user, schema):
-            return {"summary": "s", "highlights": ["h"], "proposed_tasks": [{"title": "t", "reason": "r", "priority": 1, "chat": "c"}]}
+            return {
+                "summary": "s",
+                "highlights": ["h"],
+                "proposed_tasks": [{"title": "t", "reason": "r", "priority": 1, "chat": "c"}],
+            }
 
     monkeypatch.setattr(summarizer, "get_llm", lambda: Good())
     result = await summarizer.summarize("msgs", "tasks")

@@ -206,3 +206,105 @@ class ProjectNote(Base):
     position: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class Server(Base):
+    """A VPS that runs the dash-agent. Authenticates with its own token (hash stored)."""
+
+    __tablename__ = "servers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(100))
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    hostname: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    os: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    agent_version: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_report: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # metrics + services as sent
+    disk_alert_pct: Mapped[int] = mapped_column(Integer, default=85)
+    silence_alert_min: Mapped[int] = mapped_column(Integer, default=5)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class MetricSample(Base):
+    __tablename__ = "metric_samples"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    server_id: Mapped[int] = mapped_column(ForeignKey("servers.id", ondelete="CASCADE"), index=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    load1: Mapped[float] = mapped_column(Float, default=0)
+    mem_pct: Mapped[float] = mapped_column(Float, default=0)
+    disk_pct: Mapped[float] = mapped_column(Float, default=0)  # worst disk
+
+
+class Monitor(Base):
+    """External HTTP check performed by the dashboard itself."""
+
+    __tablename__ = "monitors"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(100))
+    url: Mapped[str] = mapped_column(String(1000))
+    method: Mapped[str] = mapped_column(String(10), default="GET")
+    expect_status: Mapped[int] = mapped_column(Integer, default=200)
+    expect_text: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    timeout_s: Mapped[int] = mapped_column(Integer, default=10)
+    interval_s: Mapped[int] = mapped_column(Integer, default=60)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_ok: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    last_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class CheckSample(Base):
+    __tablename__ = "check_samples"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    monitor_id: Mapped[int] = mapped_column(ForeignKey("monitors.id", ondelete="CASCADE"), index=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    ok: Mapped[bool] = mapped_column(Boolean)
+    status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class Incident(Base):
+    """Something is wrong (or was). One open incident per (project, kind, key)."""
+
+    __tablename__ = "incidents"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    server_id: Mapped[int | None] = mapped_column(ForeignKey("servers.id", ondelete="CASCADE"), nullable=True)
+    monitor_id: Mapped[int | None] = mapped_column(
+        ForeignKey("monitors.id", ondelete="CASCADE"), nullable=True
+    )
+    kind: Mapped[str] = mapped_column(
+        String(40)
+    )  # http_down | agent_silent | disk_high | service_down | unit_failed | ...
+    key: Mapped[str] = mapped_column(String(200), default="")
+    severity: Mapped[str] = mapped_column(String(10), default="critical")  # warning | critical
+    message: Mapped[str] = mapped_column(Text)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    notified: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class AgentCommand(Base):
+    __tablename__ = "agent_commands"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    server_id: Mapped[int] = mapped_column(ForeignKey("servers.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(30))  # ping | restart | stop | start | logs | script
+    args: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(12), default="queued")  # queued | sent | done | failed
+    ok: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    output: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

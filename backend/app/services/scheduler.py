@@ -11,7 +11,7 @@ from sqlalchemy import select
 from app.config import get_settings
 from app.db import SessionLocal
 from app.models import Task
-from app.services import agenda, apple_reminders, balances, push, summaries, telegram_bot
+from app.services import agenda, apple_reminders, balances, monitoring, push, summaries, telegram_bot
 from app.services.tasks import open_tasks_text
 
 log = logging.getLogger(__name__)
@@ -86,6 +86,24 @@ async def job_morning_brief() -> None:
         await push.notify_all(
             db, "Утренний бриф", tasks.splitlines()[0] if tasks else "", url="/", tag="morning"
         )
+
+
+async def job_http_checks() -> None:
+    async with SessionLocal() as db:
+        try:
+            await monitoring.run_http_checks(db)
+        except Exception as exc:
+            log.warning("http checks failed: %s", exc)
+
+
+async def job_silent_agents() -> None:
+    async with SessionLocal() as db:
+        await monitoring.check_silent_agents(db)
+
+
+async def job_cleanup_samples() -> None:
+    async with SessionLocal() as db:
+        await monitoring.cleanup_old_samples(db)
 
 
 def start() -> None:

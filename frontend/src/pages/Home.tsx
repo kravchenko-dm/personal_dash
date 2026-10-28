@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
-import { type AppleRemindersResp, type BalanceAccount, type CalendarEvent, type Project, type Summary, type Task } from "../lib/api";
-import { STAGE_LABEL } from "../lib/format";
+import { type AppleRemindersResp, type BalanceAccount, type CalendarEvent, type Incident, type Project, type Summary, type Task } from "../lib/api";
+import { HEALTH_COLOR, STAGE_LABEL } from "../lib/format";
 import { useFetch } from "../lib/useFetch";
 import { fmtDate, fmtMoney } from "../lib/format";
 import { TaskRow } from "./Tasks";
@@ -13,6 +13,7 @@ export default function Home() {
   const summaries = useFetch<Summary[]>("/api/summaries?limit=1");
   const reminders = useFetch<AppleRemindersResp>("/api/apple/reminders");
   const projects = useFetch<Project[]>("/api/projects");
+  const incidents = useFetch<Incident[]>("/api/incidents");
 
   const open = (tasks.data ?? []).filter((t) => t.status !== "done");
   const today = open.filter((t) => t.due_at && new Date(t.due_at).getTime() < Date.now() + 86400000);
@@ -28,6 +29,17 @@ export default function Home() {
       <div className="page-head">
         <h1>{new Date().toLocaleDateString("ru-RU", { weekday: "long", day: "numeric", month: "long" })}</h1>
       </div>
+
+      {(incidents.data?.length ?? 0) > 0 && (
+        <div className="card" style={{ borderColor: "var(--danger)" }}>
+          <h3 style={{ color: "var(--danger)" }}>Инциденты · {incidents.data!.length}</h3>
+          {incidents.data!.slice(0, 5).map((i) => (
+            <Link key={i.id} to={`/projects/${i.project_id}?tab=monitoring`} className="small" style={{ display: "block", padding: "3px 0", color: "inherit" }}>
+              {i.severity === "critical" ? "🔴" : "⚠️"} {i.message}
+            </Link>
+          ))}
+        </div>
+      )}
 
       <div className="card" style={{ padding: 0 }}>
         <div className="row between" style={{ padding: "12px 14px 4px" }}>
@@ -55,7 +67,7 @@ export default function Home() {
             return (
               <Link key={p.id} to={`/projects/${p.id}`} className="row between" style={{ padding: "6px 0", color: "inherit", borderLeft: `3px solid ${p.color}`, paddingLeft: 8 }}>
                 <span>
-                  {p.name} <span className="chip">{STAGE_LABEL[p.stage]}</span>
+                  <span style={{ color: HEALTH_COLOR[p.health] }}>●</span> {p.name} <span className="chip">{STAGE_LABEL[p.stage]}</span>
                 </span>
                 <span className="small muted">{p.status_note ? p.status_note.slice(0, 40) : `${wip} в работе`}</span>
               </Link>

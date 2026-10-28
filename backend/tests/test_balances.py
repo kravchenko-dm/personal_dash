@@ -26,7 +26,9 @@ async def test_manual_account_and_history(client, auth):
 
 
 async def test_missing_required_field_rejected(client, auth):
-    resp = await client.post("/api/balances", json={"name": "x", "provider": "openrouter", "config": {}}, headers=auth)
+    resp = await client.post(
+        "/api/balances", json={"name": "x", "provider": "openrouter", "config": {}}, headers=auth
+    )
     assert resp.status_code == 400
 
 
@@ -66,7 +68,12 @@ async def test_http_json_provider_parses(monkeypatch):
 
     monkeypatch.setattr(httpx, "AsyncClient", fake_client)
     result = await HttpJsonProvider().fetch(
-        {"url": "https://x/balance", "headers": "X-Api-Key: k", "path": "$.data.balance", "currency_path": "$.data.currency"}
+        {
+            "url": "https://x/balance",
+            "headers": "X-Api-Key: k",
+            "path": "$.data.balance",
+            "currency_path": "$.data.currency",
+        }
     )
     assert result.value == 42.5 and result.currency == "EUR"
 

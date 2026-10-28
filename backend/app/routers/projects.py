@@ -10,6 +10,7 @@ from app.auth import require_auth
 from app.db import get_db
 from app.models import Feature, Project, ProjectNote, Summary, TelegramChat
 from app.schemas import SummaryOut, TelegramChatOut
+from app.services import alerts, monitoring
 from app.services import projects as svc
 
 router = APIRouter(prefix="/api/projects", tags=["projects"], dependencies=[Depends(require_auth)])
@@ -55,6 +56,8 @@ class ProjectOut(BaseModel):
     updated_at: datetime
     feature_counts: dict[str, int] = Field(default_factory=dict)
     chat_count: int = 0
+    health: str = "ok"  # ok | warning | critical
+    open_incidents: int = 0
 
 
 class FeatureIn(BaseModel):
@@ -141,6 +144,9 @@ async def _out(db: AsyncSession, project: Project) -> ProjectOut:
     out = ProjectOut.model_validate(project)
     out.feature_counts = counts.get(project.id, {})
     out.chat_count = len(chats)
+    incidents = await alerts.open_incidents(db, project.id)
+    out.health = monitoring.project_health(incidents)
+    out.open_incidents = len(incidents)
     return out
 
 
@@ -158,11 +164,15 @@ async def list_projects(archived: bool = False, db: AsyncSession = Depends(get_d
     chat_counts: dict[int, int] = {}
     for (pid,) in chat_rows:
         chat_counts[pid] = chat_counts.get(pid, 0) + 1
+    incidents = await alerts.open_incidents(db)
     out = []
     for p in projects:
         item = ProjectOut.model_validate(p)
         item.feature_counts = counts.get(p.id, {})
         item.chat_count = chat_counts.get(p.id, 0)
+        mine = [i for i in incidents if i.project_id == p.id]
+        item.health = monitoring.project_health(mine)
+        item.open_incidents = len(mine)
         out.append(item)
     return out
 
