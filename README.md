@@ -43,7 +43,10 @@ frontend/src
   lib/api.ts        # типизированный клиент API
 agent/dash_agent.py  # агент для VPS (stdlib only), раздаётся бэкендом по /api/agent/script
 agent/install.sh.tmpl
+deploy/bootstrap.sh  # первичная настройка VPS
+deploy/deploy.sh     # обновление на сервере (вызывается GitHub Actions)
 deploy/Caddyfile
+.github/workflows/deploy.yml
 docker-compose.yml
 ```
 
@@ -51,34 +54,115 @@ docker-compose.yml
 
 Нужен домен, указывающий на VPS (A-запись). Telegram webhook и Web Push требуют HTTPS.
 
+### 1. Первичная настройка сервера (один раз, от root)
+
 ```bash
-# на сервере
-apt install -y docker.io docker-compose-v2 git
-git clone https://github.com/kravchenko-dm/personal_dash.git && cd personal_dash
-cp .env.example .env
+curl -fsSL https://raw.githubusercontent.com/kravchenko-dm/personal_dash/main/deploy/bootstrap.sh | bash -s -- dash.example.com
 ```
 
-Заполните `.env`:
+Скрипт `deploy/bootstrap.sh` ставит Docker, ufw (22/80/443), fail2ban и автообновления, создаёт
+пользователя `dash` (группа docker, без sudo) и копирует ему ваши SSH-ключи, запрещает вход по паролю,
+добавляет swap, клонирует репозиторий в `/opt/personal_dash`, создаёт `.env` со сгенерированными
+секретами и VAPID-ключами.
 
-1. `APP_DOMAIN`, `APP_SECRET` (длинная случайная строка), `DASH_PASSWORD`.
-2. VAPID-ключи: `docker compose run --rm backend python -m app.tools.vapid` и вставьте вывод.
-3. `TELEGRAM_BOT_TOKEN` от @BotFather. В @BotFather выполните `/setprivacy` → Disable, иначе бот не видит сообщения в группах. `TELEGRAM_OWNER_ID` — ваш числовой id (бот подскажет в ответ на `/start`).
-4. Нейросеть для саммари: по умолчанию Claude, нужен `ANTHROPIC_API_KEY`. Другие провайдеры — см. раздел «Выбор нейросети».
-5. Google: в Google Cloud Console создайте OAuth Client (Web), redirect URI `https://<домен>/api/calendar/oauth/callback`, включите Calendar API.
-6. `YOUGILE_API_KEY` — в YouGile: Компания → Настройки → API.
-7. iCloud (семейный календарь Apple): `ICLOUD_USERNAME` — ваш Apple ID, `ICLOUD_APP_PASSWORD` — пароль приложения
+### 2. Заполнить `.env`
+
+`nano /opt/personal_dash/.env`:
+
+1. `APP_DOMAIN` (если не передали скрипту), `DASH_PASSWORD`.
+2. `TELEGRAM_BOT_TOKEN` от @BotFather. В @BotFather выполните `/setprivacy` → Disable, иначе бот не видит сообщения в группах. `TELEGRAM_OWNER_ID` — ваш числовой id (бот подскажет в ответ на `/start`).
+3. Нейросеть для саммари: по умолчанию Claude, нужен `ANTHROPIC_API_KEY`. Другие провайдеры — см. раздел «Выбор нейросети».
+4. Google: в Google Cloud Console создайте OAuth Client (Web), redirect URI `https://<домен>/api/calendar/oauth/callback`, включите Calendar API.
+5. `YOUGILE_API_KEY` — в YouGile: Компания → Настройки → API.
+6. iCloud (семейный календарь Apple): `ICLOUD_USERNAME` — ваш Apple ID, `ICLOUD_APP_PASSWORD` — пароль приложения
    (appleid.apple.com → Вход и безопасность → Пароли приложений). Обычный пароль Apple ID не подойдёт.
-   После запуска в разделе «Календарь → Календари» отметьте «Семья»; по умолчанию показываются все календари iCloud.
 
-Запуск:
+Всё, кроме домена и пароля, можно заполнить позже: модули без ключей просто неактивны.
+
+### 3. Запуск
 
 ```bash
-docker compose up -d --build
-docker compose logs -f backend   # должно быть "webhook set to https://..."
+sudo -u dash docker compose -f /opt/personal_dash/docker-compose.yml up -d --build
+docker compose -f /opt/personal_dash/docker-compose.yml logs -f backend   # ждём "webhook set to https://..."
 ```
 
 Откройте `https://<домен>`, введите пароль. На телефоне: «Поделиться → На экран Домой» (iOS) или
 «Установить приложение» (Android), затем в разделе «Ещё» включите уведомления.
+
+### 4. Автодеплой из GitHub (рекомендуется)
+
+Каждый push в `main` прогоняет тесты и сборку, затем по SSH выполняет на сервере `deploy/deploy.sh`
+(`git reset --hard origin/main` + `docker compose up -d --build`). Настройка:
+
+```bash
+# на своём компьютере: отдельный ключ только для деплоя
+ssh-keygen -t ed25519 -f ~/.ssh/dash_deploy -C deploy -N ""
+ssh-copy-id -i ~/.ssh/dash_deploy.pub dash@<ip-сервера>
+```
+
+В GitHub → репозиторий → Settings → Secrets and variables → Actions добавьте:
+
+| Секрет | Значение |
+|---|---|
+| `DEPLOY_HOST` | IP или домен сервера |
+| `DEPLOY_USER` | `dash` |
+| `DEPLOY_SSH_KEY` | содержимое `~/.ssh/dash_deploy` (приватный ключ) |
+| `DEPLOY_PORT` | порт SSH, если не 22 (необязательно) |
+
+Проверить: Actions → Deploy → Run workflow. Откатиться: `git revert` нужного коммита и push.
+
+### Связь Mac ↔ сервер (шпаргалка)
+
+Один раз на Mac:
+
+```bash
+# ключ для входа на сервер (если ~/.ssh/id_ed25519 ещё нет)
+ssh-keygen -t ed25519 -C "mac" -N "" -f ~/.ssh/id_ed25519
+
+# положить ключ на сервер (пароль root спросит один раз, его выдал хостер)
+ssh-copy-id -i ~/.ssh/id_ed25519.pub root@<ip-сервера>
+
+# алиас, чтобы не помнить IP
+cat >> ~/.ssh/config <<'CFG'
+Host dash
+    HostName <ip-сервера>
+    User dash
+    IdentityFile ~/.ssh/id_ed25519
+    ServerAliveInterval 60
+Host dash-root
+    HostName <ip-сервера>
+    User root
+    IdentityFile ~/.ssh/id_ed25519
+CFG
+```
+
+Затем первичная настройка (bootstrap скопирует ключ root пользователю `dash`):
+
+```bash
+ssh dash-root 'curl -fsSL https://raw.githubusercontent.com/kravchenko-dm/personal_dash/main/deploy/bootstrap.sh | bash -s -- dash.example.com'
+```
+
+Повседневные команды:
+
+```bash
+ssh dash                                              # зайти на сервер
+ssh dash 'nano /opt/personal_dash/.env'               # или: ssh dash, потом nano
+ssh dash '/opt/personal_dash/deploy/deploy.sh'        # обновить до последнего main
+ssh dash 'cd /opt/personal_dash && docker compose ps'
+ssh dash 'cd /opt/personal_dash && docker compose logs -f --tail=100 backend'
+ssh dash 'cd /opt/personal_dash && docker compose restart backend'
+scp dash:/opt/personal_dash/.env ~/Desktop/dash.env  # забрать копию .env
+```
+
+Claude Code прямо на сервере (как на других VPS): `ssh dash`, затем `npm install -g @anthropic-ai/claude-code`
+и `claude` в `/opt/personal_dash`, вход по ссылке из терминала. Пользователь `dash` состоит в группе
+docker, поэтому Claude на сервере сможет перезапускать контейнеры и читать логи.
+
+### Обновление вручную
+
+```bash
+sudo -u dash /opt/personal_dash/deploy/deploy.sh
+```
 
 ## Локальная разработка
 
