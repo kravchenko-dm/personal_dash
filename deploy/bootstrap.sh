@@ -25,15 +25,24 @@ apt-get update -q
 apt-get install -y -q ca-certificates curl git ufw fail2ban unattended-upgrades openssl
 
 echo "== docker"
-if ! command -v docker >/dev/null 2>&1; then
+add_docker_repo() {
   install -m 0755 -d /etc/apt/keyrings
   curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
   chmod a+r /etc/apt/keyrings/docker.asc
   . /etc/os-release
   echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu ${VERSION_CODENAME} stable" > /etc/apt/sources.list.d/docker.list
   apt-get update -q
+}
+if ! command -v docker >/dev/null 2>&1; then
+  add_docker_repo
   apt-get install -y -q docker-ce docker-ce-cli containerd.io docker-compose-plugin
 fi
+# hosting images often ship Docker without the Compose plugin
+if ! docker compose version >/dev/null 2>&1; then
+  echo "   compose plugin missing, installing"
+  apt-get install -y -q docker-compose-v2 2>/dev/null || { add_docker_repo; apt-get install -y -q docker-compose-plugin; }
+fi
+docker compose version
 systemctl enable --now docker
 # keep container logs from eating the disk
 mkdir -p /etc/docker
