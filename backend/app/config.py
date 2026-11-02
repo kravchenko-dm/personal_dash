@@ -1,6 +1,11 @@
+import re
 from functools import lru_cache
+from typing import Any
 
+from pydantic import ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_INLINE_COMMENT = re.compile(r"\s+#.*$")
 
 
 class Settings(BaseSettings):
@@ -38,6 +43,16 @@ class Settings(BaseSettings):
 
     icloud_username: str = ""
     icloud_app_password: str = ""
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def _strip_inline_comments(cls, v: Any, info: ValidationInfo) -> Any:
+        """docker compose passes `KEY=value  # note` verbatim; drop the note and treat blanks as unset."""
+        if isinstance(v, str):
+            v = _INLINE_COMMENT.sub("", v).strip()
+            if v == "":
+                return None if info.field_name == "telegram_owner_id" else ""
+        return v
 
     @property
     def public_url(self) -> str:
