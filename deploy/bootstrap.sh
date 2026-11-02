@@ -40,9 +40,16 @@ fi
 # hosting images often ship Docker without the Compose plugin
 if ! docker compose version >/dev/null 2>&1; then
   echo "   compose plugin missing, installing"
-  apt-get install -y -q docker-compose-v2 2>/dev/null || { add_docker_repo; apt-get install -y -q docker-compose-plugin; }
+  apt-get install -y -q docker-compose-v2 || true
 fi
-docker compose version
+if ! docker compose version >/dev/null 2>&1; then
+  echo "   apt package unavailable, downloading the plugin binary"
+  mkdir -p /usr/local/lib/docker/cli-plugins
+  curl -fsSL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$(uname -m)" \
+    -o /usr/local/lib/docker/cli-plugins/docker-compose
+  chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+fi
+docker compose version || { echo "docker compose still unavailable"; exit 1; }
 systemctl enable --now docker
 # keep container logs from eating the disk
 mkdir -p /etc/docker
