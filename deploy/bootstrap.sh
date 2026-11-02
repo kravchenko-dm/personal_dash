@@ -101,8 +101,11 @@ fi
 echo "== repo"
 if [ ! -d "$APP_DIR/.git" ]; then
   git clone "$REPO" "$APP_DIR"
+  chown -R $APP_USER:$APP_USER "$APP_DIR"
+else
+  chown -R $APP_USER:$APP_USER "$APP_DIR"
+  sudo -u $APP_USER git -C "$APP_DIR" pull -q --ff-only || echo "   (git pull skipped)"
 fi
-chown -R $APP_USER:$APP_USER "$APP_DIR"
 cd "$APP_DIR"
 
 if [ ! -f .env ]; then
