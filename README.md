@@ -150,8 +150,11 @@ ssh dash 'nano /opt/personal_dash/.env'               # или: ssh dash, пот
 ssh dash '/opt/personal_dash/deploy/deploy.sh'        # обновить до последнего main
 ssh dash 'cd /opt/personal_dash && docker compose ps'
 ssh dash 'cd /opt/personal_dash && docker compose logs -f --tail=100 backend'
-ssh dash 'cd /opt/personal_dash && docker compose restart backend'
+ssh dash 'cd /opt/personal_dash && docker compose up -d backend'   # применить изменения .env
 scp dash:/opt/personal_dash/.env ~/Desktop/dash.env  # забрать копию .env
+
+`docker compose restart` НЕ перечитывает `.env`: после правки переменных нужен `docker compose up -d`,
+он пересоздаст только те контейнеры, у которых изменилось окружение.
 ```
 
 Claude Code прямо на сервере (как на других VPS): `ssh dash`, затем `npm install -g @anthropic-ai/claude-code`
