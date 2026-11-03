@@ -124,6 +124,19 @@ export default function Settings({ onLogout }: { onLogout: () => void }) {
       <button className="btn danger" onClick={onLogout}>
         Выйти
       </button>
+      <p className="small muted" style={{ marginTop: 12 }}>
+        Сборка {new Date(__BUILD_TIME__).toLocaleString("ru-RU")} ·{" "}
+        <a
+          onClick={async () => {
+            const regs = await navigator.serviceWorker?.getRegistrations?.();
+            await Promise.all((regs ?? []).map((r) => r.update()));
+            window.location.reload();
+          }}
+          style={{ cursor: "pointer" }}
+        >
+          проверить обновление
+        </a>
+      </p>
     </div>
   );
 }

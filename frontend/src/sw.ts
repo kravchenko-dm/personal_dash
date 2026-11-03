@@ -1,11 +1,15 @@
 /// <reference lib="webworker" />
 import { precacheAndRoute, cleanupOutdatedCaches } from "workbox-precaching";
+import { clientsClaim } from "workbox-core";
 import { registerRoute, NavigationRoute } from "workbox-routing";
 import { NetworkFirst } from "workbox-strategies";
 import { createHandlerBoundToURL } from "workbox-precaching";
 
 declare let self: ServiceWorkerGlobalScope;
 
+// take over immediately: a new deploy must not wait until every PWA window is closed
+self.skipWaiting();
+clientsClaim();
 cleanupOutdatedCaches();
 precacheAndRoute(self.__WB_MANIFEST);
 
