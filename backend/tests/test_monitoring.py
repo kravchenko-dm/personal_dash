@@ -333,7 +333,7 @@ async def test_idle_scheduled_service_is_not_an_incident(client, auth):
         ),
         headers=hdr,
     )
-    assert r.json()["agent_version"] == "0.3.0"
+    assert r.json()["agent_version"] == load_agent().AGENT_VERSION
     assert (await client.get("/api/incidents", headers=auth)).json() == []
     await client.post(
         "/api/agent/report",
