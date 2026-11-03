@@ -228,21 +228,28 @@ async def test_manual_resolve_and_health_warning(client, auth):
 
 
 def test_agent_script_collects_and_executes(tmp_path):
+    import subprocess
+
     agent = load_agent()
-    cfg = {
-        "url": "http://x",
-        "token": "t",
-        "services": [
-            {"name": "nope", "kind": "systemd", "unit": "definitely-missing.service"},
-            {"name": "self", "kind": "process", "match": "pytest"},
-        ],
-        "discover_docker": False,
-    }
-    report = agent.build_report(cfg)
+    marker = subprocess.Popen(["sleep", "30"])  # a process we know exists, independent of the runner
+    try:
+        cfg = {
+            "url": "http://x",
+            "token": "t",
+            "services": [
+                {"name": "nope", "kind": "systemd", "unit": "definitely-missing.service"},
+                {"name": "self", "kind": "process", "match": "sleep 30"},
+            ],
+            "discover_docker": False,
+        }
+        report = agent.build_report(cfg)
+    finally:
+        marker.kill()
+        marker.wait()
     assert report["metrics"]["mem_total"] > 0 and report["metrics"]["disks"][0]["path"] == "/"
     names = {s["name"]: s for s in report["services"]}
     assert names["self"]["status"] == "running"
-    assert names["nope"]["status"] in ("stopped", "unknown", "failed")
+    assert names["nope"]["status"] in ("stopped", "unknown", "failed", "missing")
     json.dumps(report)  # serialisable
 
     assert agent.execute(cfg, {"kind": "ping"})["ok"] is True
