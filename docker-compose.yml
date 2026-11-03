@@ -51,6 +51,30 @@ services:
       - backend
       - frontend
 
+  # Optional forward proxy for Telegram bots / Claude Code on other machines.
+  # Enable with: docker compose --profile proxy up -d   (see README -> Прокси)
+  proxy:
+    image: gogost/gost:latest
+    restart: unless-stopped
+    profiles: ["proxy"]
+    command: >
+      -L "http://${PROXY_USER}:${PROXY_PASS}@:8118"
+      -L "socks5://${PROXY_USER}:${PROXY_PASS}@:1080"
+      -L "https://${PROXY_USER}:${PROXY_PASS}@:8443?certFile=/certs/${APP_DOMAIN}/${APP_DOMAIN}.crt&keyFile=/certs/${APP_DOMAIN}/${APP_DOMAIN}.key"
+    ports:
+      - "8118:8118"
+      - "1080:1080"
+      - "8443:8443"
+    volumes:
+      - type: volume
+        source: caddy_data
+        target: /certs
+        read_only: true
+        volume:
+          subpath: caddy/certificates/acme-v02.api.letsencrypt.org-directory
+    depends_on:
+      - caddy
+
 volumes:
   pgdata:
   caddy_data:

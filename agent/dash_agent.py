@@ -23,21 +23,29 @@ Config: /etc/dash-agent/config.json (or DASH_AGENT_CONFIG):
 }
 """
 
+import bz2
+import io
 import json
 import os
 import platform
+import queue
 import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
-from typing import Any, Dict, List, Optional
+import zipfile
+from typing import Any, Dict, List, Optional, Tuple
 
-AGENT_VERSION = "0.3.0"
+AGENT_VERSION = "0.4.0"
 CONFIG_PATH = os.environ.get("DASH_AGENT_CONFIG", "/etc/dash-agent/config.json")
 LOG_TAIL_MAX = 500
+BIN_DIR = "/opt/dash-agent/bin"
+RCLONE_CONF = "/etc/dash-agent/rclone.conf"
+RESTORE_DIR = "/var/backups/dash-restore"
 
 
 def log(msg: str) -> None:
@@ -347,6 +355,7 @@ def build_report(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "metrics": host_metrics(cfg.get("disks") or ["/"]),
         "services": collect_services(cfg),
         "failed_units": failed_units() if cfg.get("discover_failed_units", True) else [],
+        "busy": busy_commands(),
         "sent_at": time.time(),
     }
 
@@ -402,6 +411,14 @@ def execute(cfg: Dict[str, Any], command: Dict[str, Any]) -> Dict[str, Any]:
                 return {"ok": False, "output": "%s is not supported for kind=%s" % (kind, svc.get("kind"))}
             out = (res.stdout + res.stderr).strip()
             return {"ok": res.returncode == 0, "output": out or "%s %s: done" % (kind, svc["name"])}
+        if kind == "backup":
+            return cmd_backup(args)
+        if kind == "backup_snapshots":
+            return cmd_snapshots(args)
+        if kind == "restore":
+            return cmd_restore(args)
+        if kind == "backup_check":
+            return cmd_check(args)
         if kind == "script":
             # only scripts the dashboard installed under /etc/dash-agent/scripts are allowed
             name = os.path.basename(str(args.get("name", "")))
@@ -415,6 +432,312 @@ def execute(cfg: Dict[str, Any], command: Dict[str, Any]) -> Dict[str, Any]:
         return {"ok": False, "output": "timeout"}
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "output": "error: %s" % exc}
+
+
+
+# ---------- backup tooling (restic + rclone) ----------
+
+
+def _tool_env(extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    env = dict(os.environ)
+    env["PATH"] = BIN_DIR + ":" + env.get("PATH", "/usr/local/bin:/usr/bin:/bin")
+    env["RCLONE_CONFIG"] = RCLONE_CONF
+    if extra:
+        env.update({k: str(v) for k, v in extra.items()})
+    return env
+
+
+def _download(url: str, timeout: int = 120) -> bytes:
+    req = urllib.request.Request(url, headers={"User-Agent": "dash-agent/%s" % AGENT_VERSION})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read()
+
+
+def _arch() -> str:
+    m = platform.machine()
+    return {"x86_64": "amd64", "aarch64": "arm64", "armv7l": "arm"}.get(m, m)
+
+
+def ensure_restic() -> str:
+    """Return path to a restic binary, downloading the latest release when none is present."""
+    path = os.path.join(BIN_DIR, "restic")
+    if os.path.isfile(path):
+        return path
+    system = shutil.which("restic")
+    if system:
+        return system
+    os.makedirs(BIN_DIR, exist_ok=True)
+    meta = json.loads(_download("https://api.github.com/repos/restic/restic/releases/latest").decode())
+    want = "_linux_%s.bz2" % _arch()
+    asset = next((a for a in meta.get("assets", []) if a["name"].endswith(want)), None)
+    if not asset:
+        raise RuntimeError("no restic build for %s" % _arch())
+    data = bz2.decompress(_download(asset["browser_download_url"], timeout=300))
+    with open(path, "wb") as f:
+        f.write(data)
+    os.chmod(path, 0o755)
+    return path
+
+
+def ensure_rclone() -> str:
+    path = os.path.join(BIN_DIR, "rclone")
+    if os.path.isfile(path):
+        return path
+    system = shutil.which("rclone")
+    if system:
+        return system
+    os.makedirs(BIN_DIR, exist_ok=True)
+    data = _download("https://downloads.rclone.org/rclone-current-linux-%s.zip" % _arch(), timeout=300)
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        member = next(n for n in zf.namelist() if n.endswith("/rclone"))
+        with open(path, "wb") as f:
+            f.write(zf.read(member))
+    os.chmod(path, 0o755)
+    return path
+
+
+def _write_rclone_conf(text: Optional[str]) -> None:
+    if not text:
+        return
+    os.makedirs(os.path.dirname(RCLONE_CONF), exist_ok=True)
+    with open(RCLONE_CONF, "w") as f:
+        f.write(text if text.endswith("\n") else text + "\n")
+    os.chmod(RCLONE_CONF, 0o600)
+
+
+def _restic(args: List[str], env: Dict[str, str], timeout: int = 3600, stdin=None) -> "subprocess.CompletedProcess[str]":
+    return subprocess.run([ensure_restic()] + args, env=env, capture_output=True, text=True, timeout=timeout, stdin=stdin)
+
+
+def _repo_env(a: Dict[str, Any]) -> Dict[str, str]:
+    if a.get("rclone_conf"):
+        _write_rclone_conf(a["rclone_conf"])
+        ensure_rclone()
+    extra = {"RESTIC_REPOSITORY": a["repo"], "RESTIC_PASSWORD": a["password"]}
+    extra.update(a.get("env") or {})
+    return _tool_env(extra)
+
+
+def _ensure_repo(env: Dict[str, str]) -> str:
+    probe = _restic(["cat", "config"], env, timeout=300)
+    if probe.returncode == 0:
+        return "repo ok"
+    init = _restic(["init"], env, timeout=600)
+    if init.returncode != 0:
+        raise RuntimeError("restic init failed: %s" % (init.stderr or init.stdout).strip()[-500:])
+    return "repo initialised"
+
+
+def _parse_summary(stdout: str) -> Dict[str, Any]:
+    """restic --json prints one JSON object per line; the last 'summary' line has the numbers."""
+    summary: Dict[str, Any] = {}
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if obj.get("message_type") == "summary":
+            summary = obj
+    return summary
+
+
+def _dump_command(item: Dict[str, Any]) -> Tuple[List[str], str]:
+    """Shell-free argv for a database dump + the file name to store it under."""
+    kind = item["type"]
+    mode = item.get("mode", "docker")
+    name = item.get("name") or item.get("database") or kind
+    if kind == "pg_dump":
+        pg = ["pg_dump", "--no-owner", "--clean", "--if-exists"]
+        if item.get("user"):
+            pg += ["-U", item["user"]]
+        if item.get("database"):
+            pg += ["-d", item["database"]]
+        if mode == "docker":
+            return ["docker", "exec", "-i", item["container"]] + pg, name + ".sql"
+        if mode == "dsn":
+            return ["pg_dump", "--no-owner", "--clean", "--if-exists", item["dsn"]], name + ".sql"
+        return ["runuser", "-u", item.get("os_user", "postgres"), "--"] + pg, name + ".sql"
+    if kind == "mysql_dump":
+        my = ["mysqldump", "--single-transaction", "--routines", "--triggers"]
+        if item.get("user"):
+            my += ["-u", item["user"]]
+        if item.get("password"):
+            my += ["-p" + item["password"]]
+        my += [item["database"]] if item.get("database") else ["--all-databases"]
+        if mode == "docker":
+            return ["docker", "exec", "-i", item["container"]] + my, name + ".sql"
+        return my, name + ".sql"
+    if kind == "docker_volume":
+        vol = item["volume"]
+        return ["docker", "run", "--rm", "-v", "%s:/data:ro" % vol, "alpine", "tar", "cf", "-", "-C", "/data", "."], (item.get("name") or vol) + ".tar"
+    raise RuntimeError("unknown dump type %s" % kind)
+
+
+def _backup_stream(item: Dict[str, Any], tags: List[str], env: Dict[str, str], timeout: int) -> Dict[str, Any]:
+    argv, filename = _dump_command(item)
+    producer = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        restic = subprocess.run(
+            [ensure_restic(), "backup", "--stdin", "--stdin-filename", filename, "--json"] + sum([["--tag", t] for t in tags], []),
+            stdin=producer.stdout, env=env, capture_output=True, text=True, timeout=timeout,
+        )
+    finally:
+        if producer.stdout:
+            producer.stdout.close()
+    _, perr = producer.communicate(timeout=60)
+    if producer.returncode != 0:
+        raise RuntimeError("%s failed (exit %s): %s" % (argv[0], producer.returncode, perr.decode(errors="ignore")[-400:]))
+    if restic.returncode != 0:
+        raise RuntimeError("restic backup failed: %s" % (restic.stderr or restic.stdout)[-400:])
+    summ = _parse_summary(restic.stdout)
+    return {"item": item.get("name") or filename, "file": filename, "snapshot_id": summ.get("snapshot_id"), "added": summ.get("data_added"), "size": summ.get("total_bytes_processed")}
+
+
+def _backup_path(item: Dict[str, Any], tags: List[str], env: Dict[str, str], timeout: int) -> Dict[str, Any]:
+    path = item["path"]
+    if not os.path.exists(path):
+        raise RuntimeError("path not found: %s" % path)
+    args = ["backup", path, "--json", "--one-file-system"] + sum([["--tag", t] for t in tags], [])
+    for ex in item.get("exclude") or []:
+        args += ["--exclude", ex]
+    res = _restic(args, env, timeout=timeout)
+    if res.returncode not in (0, 3):  # 3 = some files could not be read, still a snapshot
+        raise RuntimeError("restic backup failed: %s" % (res.stderr or res.stdout)[-400:])
+    summ = _parse_summary(res.stdout)
+    return {"item": item.get("name") or path, "path": path, "snapshot_id": summ.get("snapshot_id"), "added": summ.get("data_added"), "size": summ.get("total_bytes_processed"), "warnings": res.returncode == 3}
+
+
+def cmd_backup(a: Dict[str, Any]) -> Dict[str, Any]:
+    started = time.time()
+    env = _repo_env(a)
+    log_lines = [_ensure_repo(env)]
+    plan_tag = "plan:%s" % a["plan_id"]
+    results, errors = [], []
+    per_item_timeout = int(a.get("item_timeout", 3600))
+    for item in a.get("items", []):
+        tags = [plan_tag, "item:%s" % (item.get("name") or item.get("path") or item.get("database") or item["type"])]
+        try:
+            if item["type"] == "path":
+                results.append(_backup_path(item, tags, env, per_item_timeout))
+            else:
+                results.append(_backup_stream(item, tags, env, per_item_timeout))
+            log_lines.append("ok: %s -> %s" % (results[-1]["item"], results[-1].get("snapshot_id")))
+        except Exception as exc:  # noqa: BLE001
+            errors.append("%s: %s" % (item.get("name") or item["type"], exc))
+            log_lines.append("FAILED: %s: %s" % (item.get("name") or item["type"], exc))
+    ret = a.get("retention") or {}
+    forget_args = ["forget", "--tag", plan_tag, "--group-by", "tags"]
+    for key in ("daily", "weekly", "monthly", "yearly", "last"):
+        if ret.get(key):
+            forget_args += ["--keep-%s" % key, str(ret[key])]
+    if a.get("prune"):
+        forget_args.append("--prune")
+    if len(forget_args) > 5 and results:
+        fr = _restic(forget_args, env, timeout=7200)
+        log_lines.append("forget%s: %s" % (" --prune" if a.get("prune") else "", "ok" if fr.returncode == 0 else (fr.stderr or fr.stdout)[-300:]))
+    stats: Dict[str, Any] = {}
+    st = _restic(["stats", "--json", "--mode", "raw-data"], env, timeout=900)
+    if st.returncode == 0:
+        try:
+            stats = json.loads(st.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            pass
+    return {
+        "ok": not errors and bool(results),
+        "output": "\n".join(log_lines)[-20000:],
+        "results": results,
+        "errors": errors,
+        "repo_size": stats.get("total_size"),
+        "duration": int(time.time() - started),
+    }
+
+
+def cmd_snapshots(a: Dict[str, Any]) -> Dict[str, Any]:
+    env = _repo_env(a)
+    args = ["snapshots", "--json"]
+    if a.get("plan_id"):
+        args += ["--tag", "plan:%s" % a["plan_id"]]
+    res = _restic(args, env, timeout=600)
+    if res.returncode != 0:
+        return {"ok": False, "output": (res.stderr or res.stdout)[-1000:]}
+    try:
+        snaps = json.loads(res.stdout or "[]")
+    except ValueError:
+        return {"ok": False, "output": "bad snapshots json"}
+    out = [
+        {"id": s_.get("short_id") or s_.get("id", "")[:8], "time": s_.get("time"), "tags": s_.get("tags", []), "paths": s_.get("paths", []), "hostname": s_.get("hostname")}
+        for s_ in snaps[-200:]
+    ]
+    return {"ok": True, "output": "%d snapshots" % len(out), "snapshots": out}
+
+
+def cmd_restore(a: Dict[str, Any]) -> Dict[str, Any]:
+    env = _repo_env(a)
+    snap = a["snapshot_id"]
+    target = os.path.join(RESTORE_DIR, str(a.get("plan_id", "x")), snap)
+    os.makedirs(target, exist_ok=True)
+    args = ["restore", snap, "--target", target]
+    for inc in a.get("include") or []:
+        args += ["--include", inc]
+    res = _restic(args, env, timeout=int(a.get("timeout", 7200)))
+    ok = res.returncode == 0
+    listing = []
+    for root, _d, files in os.walk(target):
+        for name in files[:50]:
+            full = os.path.join(root, name)
+            try:
+                listing.append("%s (%d bytes)" % (full, os.path.getsize(full)))
+            except OSError:
+                pass
+        if len(listing) >= 50:
+            break
+    return {"ok": ok, "output": ("restored to %s\n" % target) + "\n".join(listing) + ("\n" + (res.stderr or "")[-500:] if not ok else ""), "target": target}
+
+
+def cmd_check(a: Dict[str, Any]) -> Dict[str, Any]:
+    env = _repo_env(a)
+    args = ["check"]
+    if a.get("read_data_subset"):
+        args += ["--read-data-subset", str(a["read_data_subset"])]
+    res = _restic(args, env, timeout=int(a.get("timeout", 7200)))
+    return {"ok": res.returncode == 0, "output": (res.stdout + res.stderr)[-5000:]}
+
+
+# ---------- background command runner ----------
+
+_cmd_queue: "queue.Queue[Tuple[Dict[str, Any], Dict[str, Any]]]" = queue.Queue()
+_busy_lock = threading.Lock()
+_busy: Dict[int, Dict[str, Any]] = {}
+
+
+def _worker() -> None:
+    while True:
+        cfg, command = _cmd_queue.get()
+        cid = command.get("id")
+        with _busy_lock:
+            _busy[cid] = {"kind": command.get("kind"), "since": time.time()}
+        try:
+            result = execute(cfg, command)
+        except Exception as exc:  # noqa: BLE001
+            result = {"ok": False, "output": "agent error: %s" % exc}
+        for attempt in range(5):
+            try:
+                post_json(cfg, "/api/agent/commands/%s/result" % cid, result, timeout=60)
+                break
+            except Exception as exc:  # noqa: BLE001
+                log("result upload failed (%s/5): %s" % (attempt + 1, exc))
+                time.sleep(10 * (attempt + 1))
+        with _busy_lock:
+            _busy.pop(cid, None)
+        _cmd_queue.task_done()
+
+
+def busy_commands() -> List[Dict[str, Any]]:
+    with _busy_lock:
+        return [{"id": k, "kind": v["kind"], "running_s": int(time.time() - v["since"])} for k, v in _busy.items()]
 
 
 # ---------- transport ----------
@@ -438,6 +761,8 @@ def self_update(cfg: Dict[str, Any], server_version: Optional[str]) -> None:
     """Replace this script with the dashboard's bundled version and restart (systemd restarts us)."""
     if not server_version or server_version == AGENT_VERSION or not cfg.get("auto_update", True):
         return
+    if busy_commands():
+        return  # never swap the binary under a running backup
     path = os.path.abspath(__file__)
     url = cfg["url"].rstrip("/") + "/api/agent/script"
     try:
@@ -474,6 +799,7 @@ def main_loop() -> None:
     cfg = load_config()
     interval = int(cfg.get("interval", 20))
     log("dash-agent %s -> %s (every %ss)" % (AGENT_VERSION, cfg["url"], interval))
+    threading.Thread(target=_worker, name="commands", daemon=True).start()
     backoff = interval
     while True:
         started = time.time()
@@ -483,12 +809,8 @@ def main_loop() -> None:
             backoff = interval
             self_update(cfg, response.get("agent_version"))
             for command in response.get("commands", []):
-                log("command %s %s" % (command.get("id"), command.get("kind")))
-                result = execute(cfg, command)
-                try:
-                    post_json(cfg, "/api/agent/commands/%s/result" % command["id"], result, timeout=30)
-                except Exception as exc:  # noqa: BLE001
-                    log("result upload failed: %s" % exc)
+                log("command %s %s queued" % (command.get("id"), command.get("kind")))
+                _cmd_queue.put((cfg, command))
         except urllib.error.HTTPError as exc:
             log("report rejected: HTTP %s %s" % (exc.code, exc.read()[:200]))
             backoff = min(backoff * 2, 300)

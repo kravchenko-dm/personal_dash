@@ -343,6 +343,60 @@ LLM_BASE_URL=              # пусто = адрес по умолчанию; д
 Код: `backend/app/services/llm/`. Новый вендор с другим протоколом — класс с методом
 `complete_json(system, user, schema)` и ветка в `get_llm()`.
 
+## Прокси для Telegram-ботов и Claude Code
+
+На сервере дашборда можно поднять форвард-прокси (gost), через который боты и Claude Code с других
+машин ходят к api.telegram.org и api.anthropic.com. Три слушателя с одним логином/паролем:
+
+| Порт | Протокол | Для кого |
+|---|---|---|
+| 8118 | HTTP CONNECT | большинство библиотек, Claude Code (`HTTPS_PROXY`) |
+| 1080 | SOCKS5 | aiogram через aiohttp-socks, Telethon/Pyrogram |
+| 8443 | HTTPS (TLS к прокси, сертификат домена) | клиенты с поддержкой https-прокси: curl, httpx, Node/Claude Code; устойчивее к DPI |
+
+Включение:
+
+```bash
+ssh dash
+cd /opt/personal_dash
+sed -i "s|^PROXY_PASS=.*|PROXY_PASS=$(openssl rand -hex 16)|" .env && grep PROXY_ .env
+docker compose --profile proxy up -d
+```
+
+Порты открываются только для известных адресов (пароль есть, но лишний перебор ни к чему):
+
+```bash
+sudo ufw allow from <ip-сервера-с-ботами> to any port 8118,1080,8443 proto tcp
+```
+
+Клиенты:
+
+```bash
+# любая программа, уважающая переменные окружения (Claude Code, curl, httpx, requests)
+export HTTPS_PROXY=http://proxy:ПАРОЛЬ@93.183.88.113:8118
+# или с TLS до прокси
+export HTTPS_PROXY=https://proxy:ПАРОЛЬ@d4m.k2tech.ru:8443
+claude
+```
+
+```python
+# aiogram 3
+from aiogram.client.session.aiohttp import AiohttpSession
+bot = Bot(token, session=AiohttpSession(proxy="http://proxy:ПАРОЛЬ@93.183.88.113:8118"))
+# python-telegram-bot 21+
+app = Application.builder().token(token).proxy("http://proxy:ПАРОЛЬ@93.183.88.113:8118").get_updates_proxy(...).build()
+# Telethon / Pyrogram: SOCKS5 93.183.88.113:1080 с логином и паролем
+```
+
+С Mac с динамическим IP удобнее не открывать порт, а пробросить его по SSH:
+
+```bash
+ssh -N -L 8118:127.0.0.1:8118 dash &
+HTTPS_PROXY=http://proxy:ПАРОЛЬ@127.0.0.1:8118 claude
+```
+
+Проверка: `curl -x http://proxy:ПАРОЛЬ@93.183.88.113:8118 https://api.telegram.org/` должен вернуть JSON с `"ok":false` (нет метода, но сервер Telegram ответил).
+
 ## Миграции схемы (Alembic)
 
 Схема управляется Alembic, при старте backend сам выполняет `alembic upgrade head`. База, созданная
