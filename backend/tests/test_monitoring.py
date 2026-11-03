@@ -298,6 +298,27 @@ def test_agent_scheduled_services(monkeypatch):
             )
         if unit == "api.timer":
             return R("LoadState=not-found\n")
+        if unit == "tg-social.service":  # Type=simple, timer with a different name
+            return R(
+                "ActiveState=inactive\nSubState=dead\nNRestarts=0\nExecMainExitTimestamp=Mon 2026-11-03 18:20:00 UTC\n"
+                "MainPID=0\nResult=success\nType=simple\nExecMainStatus=0\nLoadState=loaded\nTriggeredBy=tg-social-hourly.timer\n"
+            )
+        if unit == "tg-social-hourly.timer":
+            return R(
+                "ActiveState=active\nLastTriggerUSec=Mon 2026-11-03 18:00:00 UTC\nNextElapseUSecRealtime=Mon 2026-11-03 19:00:00 UTC\nLoadState=loaded\n"
+            )
+        if unit == "cronjob.service":  # started by cron via systemctl start, no timer at all
+            return R(
+                "ActiveState=inactive\nSubState=dead\nNRestarts=0\nExecMainExitTimestamp=Mon 2026-11-03 18:20:00 UTC\n"
+                "MainPID=0\nResult=success\nType=simple\nExecMainStatus=0\nLoadState=loaded\nTriggeredBy=\n"
+            )
+        if unit == "crashed.service":  # long-running service that died: still 'stopped'
+            return R(
+                "ActiveState=inactive\nSubState=dead\nNRestarts=3\nExecMainExitTimestamp=Mon 2026-11-03 18:20:00 UTC\n"
+                "MainPID=0\nResult=success\nType=simple\nExecMainStatus=0\nLoadState=loaded\nTriggeredBy=\n"
+            )
+        if unit.endswith(".timer"):
+            return R("LoadState=not-found\n")
         if unit == "ghost.service":
             return R("LoadState=not-found\n")
         return R("")
@@ -319,6 +340,14 @@ def test_agent_scheduled_services(monkeypatch):
     assert plain["status"] == "running" and plain["restarts"] == 2 and "scheduled" not in plain
 
     assert agent.systemd_status("ghost.service")["status"] == "missing"
+
+    other_timer = agent.systemd_status("tg-social.service")
+    assert other_timer["status"] == "idle" and other_timer["next_run"].startswith("2026-11-03T")
+    assert agent.systemd_status("cronjob.service")["status"] == "idle"  # clean exit, no restarts -> a job
+    assert (
+        agent.systemd_status("crashed.service")["status"] == "stopped"
+    )  # restarts > 0 -> a daemon that died
+    assert agent.systemd_status("cronjob.service", {"scheduled": False})["status"] == "stopped"
 
 
 async def test_idle_scheduled_service_is_not_an_incident(client, auth):

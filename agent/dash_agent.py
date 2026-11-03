@@ -40,7 +40,7 @@ import urllib.request
 import zipfile
 from typing import Any, Dict, List, Optional, Tuple
 
-AGENT_VERSION = "0.4.0"
+AGENT_VERSION = "0.4.1"
 CONFIG_PATH = os.environ.get("DASH_AGENT_CONFIG", "/etc/dash-agent/config.json")
 LOG_TAIL_MAX = 500
 BIN_DIR = "/opt/dash-agent/bin"
@@ -153,7 +153,7 @@ def systemd_status(unit: str, svc: Optional[Dict[str, Any]] = None) -> Dict[str,
         props = _systemd_show(
             unit,
             "ActiveState,SubState,NRestarts,ExecMainStartTimestamp,ExecMainExitTimestamp,"
-            "MainPID,Result,Type,ExecMainStatus,LoadState",
+            "MainPID,Result,Type,ExecMainStatus,LoadState,TriggeredBy",
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
         return {"status": "unknown", "detail": str(exc)}
@@ -162,14 +162,25 @@ def systemd_status(unit: str, svc: Optional[Dict[str, Any]] = None) -> Dict[str,
 
     active = props.get("ActiveState", "unknown")
     base = unit[:-8] if unit.endswith(".service") else unit
+    # the timer may be named differently from the service: systemd tells us via TriggeredBy
+    triggered = [t for t in (props.get("TriggeredBy") or "").split() if t.endswith(".timer")]
+    timer_names = triggered or [base + ".timer"]
     timer: Dict[str, str] = {}
-    try:
-        t = _systemd_show(base + ".timer", "ActiveState,LastTriggerUSec,NextElapseUSecRealtime,LoadState")
+    for tname in timer_names:
+        try:
+            t = _systemd_show(tname, "ActiveState,LastTriggerUSec,NextElapseUSecRealtime,LoadState")
+        except (subprocess.TimeoutExpired, OSError):
+            continue
         if t.get("LoadState") not in (None, "not-found"):
             timer = t
-    except (subprocess.TimeoutExpired, OSError):
-        pass
-    scheduled = bool(svc.get("scheduled")) or props.get("Type") == "oneshot" or bool(timer)
+            break
+    exited_cleanly = active == "inactive" and props.get("Result") == "success" and bool(props.get("ExecMainExitTimestamp"))
+    scheduled = (
+        bool(svc.get("scheduled"))
+        or props.get("Type") == "oneshot"
+        or bool(timer)
+        or (exited_cleanly and props.get("Type") in ("simple", "exec") and int(props.get("NRestarts") or 0) == 0 and svc.get("scheduled") is not False)
+    )
 
     out: Dict[str, Any] = {
         "detail": props.get("SubState", ""),
