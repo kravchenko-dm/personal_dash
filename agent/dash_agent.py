@@ -12,9 +12,11 @@ Config: /etc/dash-agent/config.json (or DASH_AGENT_CONFIG):
   "disks": ["/"],
   "discover_docker": true,
   "discover_failed_units": true,
+  "auto_update": true,
   "services": [
     {"name": "api", "kind": "systemd", "unit": "myapi.service",
      "path": "/opt/myapi", "url": "http://127.0.0.1:8000/health"},
+    {"name": "nightly-stats", "kind": "systemd", "unit": "stats.service", "max_age_hours": 26},
     {"name": "web", "kind": "docker", "container": "web", "version_file": "/opt/web/VERSION"},
     {"name": "worker", "kind": "process", "match": "celery worker"}
   ]
@@ -33,7 +35,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Optional
 
-AGENT_VERSION = "0.2.0"
+AGENT_VERSION = "0.3.0"
 CONFIG_PATH = os.environ.get("DASH_AGENT_CONFIG", "/etc/dash-agent/config.json")
 LOG_TAIL_MAX = 500
 
@@ -107,23 +109,93 @@ def host_metrics(disks: List[str]) -> Dict[str, Any]:
 # ---------- services ----------
 
 
-def systemd_status(unit: str) -> Dict[str, Any]:
+def _systemd_show(unit: str, props: str) -> Dict[str, str]:
+    res = run(["systemctl", "show", unit, "-p", props])
+    return dict(line.split("=", 1) for line in res.stdout.splitlines() if "=" in line)
+
+
+def _parse_systemd_ts(value: str) -> Optional[float]:
+    """'Mon 2026-11-03 06:00:12 UTC' -> epoch seconds (None when empty/n/a)."""
+    value = (value or "").strip()
+    if not value or value in ("n/a", "0"):
+        return None
+    for fmt in ("%a %Y-%m-%d %H:%M:%S %Z", "%a %Y-%m-%d %H:%M:%S"):
+        try:
+            parts = value.split()
+            if len(parts) == 4:  # drop timezone name, systemd prints local time
+                return time.mktime(time.strptime(" ".join(parts[:3]), "%a %Y-%m-%d %H:%M:%S"))
+            return time.mktime(time.strptime(value, fmt))
+        except ValueError:
+            continue
+    return None
+
+
+def _iso(ts: Optional[float]) -> Optional[str]:
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(ts)) if ts else None
+
+
+def systemd_status(unit: str, svc: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Status of a systemd service. Oneshot services and services driven by a timer are
+    reported as 'idle' between runs instead of 'stopped'; they fail only when the last run
+    failed, the timer is disabled, or the last run is older than max_age_hours."""
     if not which("systemctl"):
         return {"status": "unknown", "detail": "no systemctl"}
+    svc = svc or {}
     try:
-        res = run(["systemctl", "show", unit, "-p", "ActiveState,SubState,NRestarts,ExecMainStartTimestamp,MainPID,Result"])
+        props = _systemd_show(
+            unit,
+            "ActiveState,SubState,NRestarts,ExecMainStartTimestamp,ExecMainExitTimestamp,"
+            "MainPID,Result,Type,ExecMainStatus,LoadState",
+        )
     except (subprocess.TimeoutExpired, OSError) as exc:
         return {"status": "unknown", "detail": str(exc)}
-    props = dict(line.split("=", 1) for line in res.stdout.splitlines() if "=" in line)
+    if props.get("LoadState") == "not-found":
+        return {"status": "missing", "detail": "unit not found"}
+
     active = props.get("ActiveState", "unknown")
-    status = {"active": "running", "failed": "failed", "inactive": "stopped", "activating": "starting", "deactivating": "stopping"}.get(active, active)
-    return {
-        "status": status,
+    base = unit[:-8] if unit.endswith(".service") else unit
+    timer: Dict[str, str] = {}
+    try:
+        t = _systemd_show(base + ".timer", "ActiveState,LastTriggerUSec,NextElapseUSecRealtime,LoadState")
+        if t.get("LoadState") not in (None, "not-found"):
+            timer = t
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    scheduled = bool(svc.get("scheduled")) or props.get("Type") == "oneshot" or bool(timer)
+
+    out: Dict[str, Any] = {
         "detail": props.get("SubState", ""),
         "restarts": int(props.get("NRestarts") or 0),
         "started_at": props.get("ExecMainStartTimestamp") or None,
         "pid": int(props.get("MainPID") or 0) or None,
     }
+    if not scheduled:
+        out["status"] = {
+            "active": "running", "failed": "failed", "inactive": "stopped",
+            "activating": "starting", "deactivating": "stopping",
+        }.get(active, active)
+        return out
+
+    last_run = _parse_systemd_ts(props.get("ExecMainExitTimestamp", "")) or _parse_systemd_ts(timer.get("LastTriggerUSec", ""))
+    next_run = _parse_systemd_ts(timer.get("NextElapseUSecRealtime", ""))
+    result = props.get("Result", "")
+    out.update({"scheduled": True, "last_run": _iso(last_run), "next_run": _iso(next_run), "result": result})
+    max_age_h = svc.get("max_age_hours")
+    if active in ("active", "activating"):
+        out["status"] = "running"
+    elif result not in ("", "success"):
+        out["status"] = "failed"
+        out["detail"] = "last run: %s (exit %s)" % (result, props.get("ExecMainStatus", "?"))
+    elif timer and timer.get("ActiveState") not in ("active", "waiting"):
+        out["status"] = "stopped"
+        out["detail"] = "timer %s" % timer.get("ActiveState")
+    elif max_age_h and last_run and time.time() - last_run > float(max_age_h) * 3600:
+        out["status"] = "stale"
+        out["detail"] = "no successful run for %.0f h" % ((time.time() - last_run) / 3600)
+    else:
+        out["status"] = "idle"
+        out["detail"] = "по расписанию"
+    return out
 
 
 def docker_inspect(name: str) -> Dict[str, Any]:
@@ -243,7 +315,7 @@ def collect_services(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
     for svc in cfg.get("services", []):
         kind = svc.get("kind", "systemd")
         if kind == "systemd":
-            info = systemd_status(svc.get("unit") or svc["name"])
+            info = systemd_status(svc.get("unit") or svc["name"], svc)
         elif kind == "docker":
             configured_containers.add(svc.get("container") or svc["name"])
             info = docker_inspect(svc.get("container") or svc["name"])
@@ -362,6 +434,32 @@ def post_json(cfg: Dict[str, Any], path: str, payload: Dict[str, Any], timeout: 
     return json.loads(body) if body else {}
 
 
+def self_update(cfg: Dict[str, Any], server_version: Optional[str]) -> None:
+    """Replace this script with the dashboard's bundled version and restart (systemd restarts us)."""
+    if not server_version or server_version == AGENT_VERSION or not cfg.get("auto_update", True):
+        return
+    path = os.path.abspath(__file__)
+    url = cfg["url"].rstrip("/") + "/api/agent/script"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "dash-agent/%s" % AGENT_VERSION})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            code = resp.read()
+        if b"AGENT_VERSION" not in code or b"def main_loop" not in code:
+            log("self-update: downloaded file does not look like the agent, skipping")
+            return
+        compile(code, path, "exec")  # syntax check before replacing ourselves
+        tmp = path + ".new"
+        with open(tmp, "wb") as f:
+            f.write(code)
+        os.chmod(tmp, 0o755)
+        os.replace(tmp, path)
+        log("self-update: %s -> %s, restarting" % (AGENT_VERSION, server_version))
+        sys.stdout.flush()
+        os.execv(sys.executable, [sys.executable, path] + sys.argv[1:])
+    except Exception as exc:  # noqa: BLE001
+        log("self-update failed: %s" % exc)
+
+
 def load_config() -> Dict[str, Any]:
     with open(CONFIG_PATH) as f:
         cfg = json.load(f)
@@ -383,6 +481,7 @@ def main_loop() -> None:
             cfg = load_config()  # pick up config edits without restart
             response = post_json(cfg, "/api/agent/report", build_report(cfg))
             backoff = interval
+            self_update(cfg, response.get("agent_version"))
             for command in response.get("commands", []):
                 log("command %s %s" % (command.get("id"), command.get("kind")))
                 result = execute(cfg, command)

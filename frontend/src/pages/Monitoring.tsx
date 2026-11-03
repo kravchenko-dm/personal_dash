@@ -6,7 +6,7 @@ import { Modal } from "../components/Modal";
 import { Sparkline, UptimeBar } from "../components/Sparkline";
 import { useToast } from "../components/Toast";
 
-const SVC_COLOR: Record<string, string> = { running: "var(--ok)", starting: "var(--warn)", unhealthy: "var(--warn)", restarting: "var(--warn)" };
+const SVC_COLOR: Record<string, string> = { running: "var(--ok)", idle: "var(--ok)", starting: "var(--warn)", unhealthy: "var(--warn)", restarting: "var(--warn)", stale: "var(--warn)" };
 
 function TokenModal({ server, onClose }: { server: Server; onClose: () => void }) {
   const toast = useToast();
@@ -77,8 +77,10 @@ function ServiceRow({ svc, onAction }: { svc: ServerService; onAction: (kind: st
           {svc.discovered && <span className="chip">авто</span>}
         </div>
         <div className="small muted">
-          {svc.status}
-          {svc.detail ? ` · ${svc.detail}` : ""}
+          {svc.scheduled ? (svc.status === "idle" ? "по расписанию" : svc.status) : svc.status}
+          {svc.detail && svc.detail !== "по расписанию" ? ` · ${svc.detail}` : ""}
+          {svc.scheduled && svc.last_run && ` · был ${fmtDate(svc.last_run)}`}
+          {svc.scheduled && svc.next_run && ` · след. ${fmtDate(svc.next_run)}`}
           {svc.restarts ? ` · рестартов ${svc.restarts}` : ""}
           {svc.version && ` · ${svc.version.kind === "git" ? "git " : svc.version.kind === "file" ? "v" : "обновлён "}${svc.version.value}`}
           {svc.http && (
@@ -93,8 +95,8 @@ function ServiceRow({ svc, onAction }: { svc: ServerService; onAction: (kind: st
         <button className="btn small icon" title="Логи" onClick={() => onAction("logs")}>
           📜
         </button>
-        <button className="btn small icon" title="Перезапустить" onClick={() => onAction("restart")}>
-          ↻
+        <button className="btn small icon" title={svc.scheduled ? "Запустить сейчас" : "Перезапустить"} onClick={() => onAction(svc.scheduled ? "start" : "restart")}>
+          {svc.scheduled ? "▶" : "↻"}
         </button>
       </div>
     </div>
@@ -116,6 +118,7 @@ function ServerCard({ projectId, server, onChange }: { projectId: number; server
 
   async function action(kind: string, service?: string) {
     if (kind === "restart" && !confirm(`Перезапустить ${service} на ${server.name}?`)) return;
+    if (kind === "start" && !confirm(`Запустить ${service} на ${server.name} сейчас?`)) return;
     try {
       const c = await post<AgentCommand>(`/api/projects/${projectId}/servers/${server.id}/commands`, { kind, args: service ? { service, lines: 200 } : {} });
       setCmd(c);

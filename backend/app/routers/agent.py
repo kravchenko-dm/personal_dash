@@ -1,5 +1,7 @@
 """Endpoints used by dash-agent on the servers (token auth, not JWT) + installer download."""
 
+import re
+from functools import lru_cache
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
@@ -19,6 +21,15 @@ AGENT_DIR = next(
 )  # repo checkout: <root>/agent; docker image: /app/agent
 
 
+@lru_cache
+def bundled_agent_version() -> str | None:
+    path = AGENT_DIR / "dash_agent.py"
+    if not path.exists():
+        return None
+    m = re.search(r'^AGENT_VERSION = "([^"]+)"', path.read_text(), re.M)
+    return m.group(1) if m else None
+
+
 async def _server(db: AsyncSession, token: str | None) -> Server:
     server = await monitoring.server_by_token(db, token or "")
     if not server:
@@ -35,7 +46,11 @@ async def report(
     if not isinstance(payload, dict):
         raise HTTPException(400, "report must be a JSON object")
     commands = await monitoring.ingest_report(db, server, payload)
-    return {"ok": True, "commands": [{"id": c.id, "kind": c.kind, "args": c.args} for c in commands]}
+    return {
+        "ok": True,
+        "agent_version": bundled_agent_version(),
+        "commands": [{"id": c.id, "kind": c.kind, "args": c.args} for c in commands],
+    }
 
 
 @router.post("/commands/{command_id}/result")

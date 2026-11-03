@@ -16,7 +16,8 @@ from app.services import alerts
 from app.utils import aware
 
 log = logging.getLogger(__name__)
-BAD_SERVICE_STATES = {"failed", "stopped", "exited", "dead", "unhealthy", "missing", "restarting"}
+BAD_SERVICE_STATES = {"failed", "stopped", "exited", "dead", "unhealthy", "missing", "restarting", "stale"}
+# "idle" = scheduled job between runs, "running"/"starting" fine
 RETENTION_DAYS = 30
 
 

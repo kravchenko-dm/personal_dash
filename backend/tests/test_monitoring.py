@@ -258,3 +258,82 @@ def test_agent_script_collects_and_executes(tmp_path):
     }
     (tmp_path / "app.py").write_text("print(1)")
     assert agent.service_version({"path": str(tmp_path)})["kind"] == "mtime"
+
+
+def test_agent_scheduled_services(monkeypatch):
+    agent = load_agent()
+
+    class R:
+        def __init__(self, out):
+            self.stdout, self.stderr, self.returncode = out, "", 0
+
+    def fake_run(cmd, timeout=20):
+        unit = cmd[2]
+        if unit == "tg-metrics.service":
+            return R(
+                "ActiveState=inactive\nSubState=dead\nNRestarts=0\nExecMainStartTimestamp=Mon 2026-11-03 06:00:01 UTC\n"
+                "ExecMainExitTimestamp=Mon 2026-11-03 06:00:12 UTC\nMainPID=0\nResult=success\nType=oneshot\nExecMainStatus=0\nLoadState=loaded\n"
+            )
+        if unit == "tg-metrics.timer":
+            return R(
+                "ActiveState=active\nLastTriggerUSec=Mon 2026-11-03 06:00:00 UTC\nNextElapseUSecRealtime=Tue 2026-11-04 06:00:00 UTC\nLoadState=loaded\n"
+            )
+        if unit == "broken.service":
+            return R(
+                "ActiveState=failed\nSubState=failed\nNRestarts=0\nExecMainExitTimestamp=Mon 2026-11-03 06:00:12 UTC\n"
+                "MainPID=0\nResult=exit-code\nType=oneshot\nExecMainStatus=1\nLoadState=loaded\n"
+            )
+        if unit == "broken.timer":
+            return R("LoadState=not-found\n")
+        if unit == "api.service":
+            return R(
+                "ActiveState=active\nSubState=running\nNRestarts=2\nMainPID=42\nResult=success\nType=simple\nLoadState=loaded\n"
+            )
+        if unit == "api.timer":
+            return R("LoadState=not-found\n")
+        if unit == "ghost.service":
+            return R("LoadState=not-found\n")
+        return R("")
+
+    monkeypatch.setattr(agent, "run", fake_run)
+    monkeypatch.setattr(agent, "which", lambda name: True)
+
+    idle = agent.systemd_status("tg-metrics.service")
+    assert idle["status"] == "idle" and idle["scheduled"] is True
+    assert idle["last_run"].startswith("2026-11-03") and idle["next_run"].startswith("2026-11-04")
+
+    stale = agent.systemd_status("tg-metrics.service", {"max_age_hours": 1})
+    assert stale["status"] == "stale"
+
+    broken = agent.systemd_status("broken.service")
+    assert broken["status"] == "failed" and "exit-code" in broken["detail"]
+
+    plain = agent.systemd_status("api.service")
+    assert plain["status"] == "running" and plain["restarts"] == 2 and "scheduled" not in plain
+
+    assert agent.systemd_status("ghost.service")["status"] == "missing"
+
+
+async def test_idle_scheduled_service_is_not_an_incident(client, auth):
+    pid, server = await make_project_and_server(client, auth)
+    hdr = {"X-Agent-Token": server["token"]}
+    r = await client.post(
+        "/api/agent/report",
+        json=fake_report(
+            services=[
+                {"name": "tg-metrics", "kind": "systemd", "status": "idle", "scheduled": True, "restarts": 0}
+            ]
+        ),
+        headers=hdr,
+    )
+    assert r.json()["agent_version"] == "0.3.0"
+    assert (await client.get("/api/incidents", headers=auth)).json() == []
+    await client.post(
+        "/api/agent/report",
+        json=fake_report(
+            services=[{"name": "tg-metrics", "kind": "systemd", "status": "stale", "scheduled": True}]
+        ),
+        headers=hdr,
+    )
+    inc = (await client.get("/api/incidents", headers=auth)).json()
+    assert len(inc) == 1 and "stale" in inc[0]["message"]

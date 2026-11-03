@@ -261,6 +261,10 @@ export interface ServerService {
   restarts?: number;
   started_at?: string | null;
   discovered?: boolean;
+  scheduled?: boolean;
+  last_run?: string | null;
+  next_run?: string | null;
+  result?: string;
   version?: { kind: string; value: string; branch?: string; date?: string };
   http?: { ok: boolean; status: number | null; latency_ms: number; error?: string };
   image?: string;
