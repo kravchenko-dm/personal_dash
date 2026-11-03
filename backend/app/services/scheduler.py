@@ -11,7 +11,7 @@ from sqlalchemy import select
 from app.config import get_settings
 from app.db import SessionLocal
 from app.models import Task
-from app.services import agenda, apple_reminders, balances, monitoring, push, summaries, telegram_bot
+from app.services import agenda, apple_reminders, backups, balances, monitoring, push, summaries, telegram_bot
 from app.services.tasks import open_tasks_text
 
 log = logging.getLogger(__name__)
@@ -99,6 +99,14 @@ async def job_http_checks() -> None:
 async def job_silent_agents() -> None:
     async with SessionLocal() as db:
         await monitoring.check_silent_agents(db)
+
+
+async def job_backups_tick() -> None:
+    async with SessionLocal() as db:
+        try:
+            await backups.tick(db)
+        except Exception as exc:
+            log.warning("backups tick failed: %s", exc)
 
 
 async def job_cleanup_samples() -> None:

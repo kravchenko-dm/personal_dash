@@ -11,11 +11,12 @@ import httpx
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import AgentCommand, CheckSample, MetricSample, Monitor, Server
+from app.models import AgentCommand, BackupPlan, CheckSample, MetricSample, Monitor, Server
 from app.services import alerts
 from app.utils import aware
 
 log = logging.getLogger(__name__)
+BACKUP_KINDS = {"backup", "backup_snapshots", "restore", "backup_check"}
 BAD_SERVICE_STATES = {"failed", "stopped", "exited", "dead", "unhealthy", "missing", "restarting", "stale"}
 # "idle" = scheduled job between runs, "running"/"starting" fine
 RETENTION_DAYS = 30
@@ -216,6 +217,23 @@ async def finish_command(db: AsyncSession, cmd: AgentCommand, result: dict[str, 
     cmd.status = "done" if cmd.ok else "failed"
     cmd.finished_at = datetime.now(timezone.utc)
     await db.commit()
+    if cmd.kind in BACKUP_KINDS:
+        from app.services import backups
+
+        await backups.handle_command_result(db, cmd, result)
+
+
+async def command_payload(db: AsyncSession, cmd: AgentCommand) -> dict[str, Any]:
+    """Wire form of a command. Backup secrets live in settings and are merged in here only."""
+    args = dict(cmd.args or {})
+    if cmd.kind in BACKUP_KINDS and args.get("plan_id"):
+        from app.services import backups
+
+        plan = await db.get(BackupPlan, int(args["plan_id"]))
+        dest = await backups.get_destination(db)
+        if plan is not None:
+            args.update(backups.secret_payload(dest, plan))
+    return {"id": cmd.id, "kind": cmd.kind, "args": args}
 
 
 # ---------- HTTP monitors ----------

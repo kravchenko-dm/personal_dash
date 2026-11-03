@@ -49,7 +49,7 @@ async def report(
     return {
         "ok": True,
         "agent_version": bundled_agent_version(),
-        "commands": [{"id": c.id, "kind": c.kind, "args": c.args} for c in commands],
+        "commands": [await monitoring.command_payload(db, c) for c in commands],
     }
 
 

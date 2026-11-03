@@ -39,8 +39,11 @@ def test_legacy_create_all_database_gets_stamped(tmp_path):
     from sqlalchemy import create_engine, inspect
 
     path = tmp_path / "legacy.db"
+    # a pre-Alembic database looks like revision 0001 without the version table
+    command.upgrade(alembic_config(f"sqlite+aiosqlite:///{path}"), "0001")
     sync_engine = create_engine(f"sqlite:///{path}")
-    Base.metadata.create_all(sync_engine)
+    with sync_engine.begin() as conn:
+        conn.exec_driver_sql("DROP TABLE alembic_version")
     assert "alembic_version" not in inspect(sync_engine).get_table_names()
     sync_engine.dispose()
 
@@ -61,5 +64,8 @@ def test_legacy_create_all_database_gets_stamped(tmp_path):
         os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///./test.db"
         get_settings.cache_clear()
     sync_engine = create_engine(f"sqlite:///{path}")
-    assert "alembic_version" in inspect(sync_engine).get_table_names()
+    names = inspect(sync_engine).get_table_names()
+    assert "alembic_version" in names and "backup_plans" in names  # stamped 0001, upgraded to head
+    with sync_engine.connect() as conn:
+        assert conn.exec_driver_sql("SELECT version_num FROM alembic_version").scalar() == "0002"
     sync_engine.dispose()

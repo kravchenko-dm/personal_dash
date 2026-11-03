@@ -10,6 +10,7 @@ from app.routers import (
     agent,
     apple,
     auth,
+    backups,
     balances,
     calendar,
     monitoring,
@@ -64,5 +65,6 @@ for r in (
     projects,
     monitoring,
     agent,
+    backups,
 ):
     app.include_router(r.router)

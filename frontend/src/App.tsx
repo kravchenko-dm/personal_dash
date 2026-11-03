@@ -12,6 +12,7 @@ import Summaries from "./pages/Summaries";
 import Settings from "./pages/Settings";
 import Projects from "./pages/Projects";
 import ProjectPage from "./pages/ProjectPage";
+import BackupSettings from "./pages/BackupSettings";
 
 const NAV = [
   { to: "/", ic: "🏠", label: "Главная" },
@@ -44,6 +45,7 @@ export default function App() {
           <Route path="/yougile" element={<YouGile />} />
           <Route path="/projects" element={<Projects />} />
           <Route path="/projects/:id" element={<ProjectPage />} />
+          <Route path="/settings/backups" element={<BackupSettings />} />
           <Route path="/summaries" element={<Summaries />} />
           <Route
             path="/settings"

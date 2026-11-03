@@ -56,6 +56,10 @@ export default function Settings({ onLogout }: { onLogout: () => void }) {
         <span>📝 Саммари и чаты Telegram</span>
         <span className="muted">›</span>
       </Link>
+      <Link to="/settings/backups" className="card clickable row between" style={{ display: "flex" }}>
+        <span>💾 Хранилище бэкапов</span>
+        <span className="muted">›</span>
+      </Link>
       <Link to="/yougile" className="card clickable row between" style={{ display: "flex" }}>
         <span>🗂 YouGile</span>
         <span className="muted">›</span>

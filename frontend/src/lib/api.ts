@@ -345,3 +345,64 @@ export interface Incident {
   started_at: string;
   resolved_at: string | null;
 }
+
+export interface BackupItem {
+  type: "path" | "pg_dump" | "mysql_dump" | "docker_volume";
+  name?: string;
+  path?: string;
+  exclude?: string[];
+  mode?: "docker" | "local" | "dsn";
+  container?: string;
+  user?: string;
+  password?: string;
+  database?: string;
+  dsn?: string;
+  volume?: string;
+}
+
+export interface BackupPlan {
+  id: number;
+  project_id: number;
+  server_id: number;
+  name: string;
+  enabled: boolean;
+  items: BackupItem[];
+  schedule: string;
+  retention: Record<string, number>;
+  max_age_hours: number;
+  repo_subpath: string;
+  next_run_at: string | null;
+  last_run_at: string | null;
+  last_ok_at: string | null;
+  last_status: "ok" | "failed" | "running" | null;
+  repo_size: number | null;
+  snapshots: { id: string; time: string; tags: string[]; paths: string[]; hostname?: string }[] | null;
+  repo: string;
+  server_name: string;
+}
+
+export interface BackupRun {
+  id: number;
+  plan_id: number;
+  command_id: number | null;
+  kind: "backup" | "restore" | "check" | "snapshots";
+  trigger: string;
+  status: "running" | "ok" | "failed";
+  started_at: string;
+  finished_at: string | null;
+  duration_s: number | null;
+  added_bytes: number | null;
+  results: Record<string, unknown>[] | null;
+  output: string | null;
+}
+
+export interface BackupDestination {
+  type: "rclone" | "sftp" | "s3" | "rest" | "local";
+  remote?: string;
+  base_path?: string;
+  url?: string;
+  has_rclone_conf: boolean;
+  has_password: boolean;
+  env_keys: string[];
+  configured: boolean;
+}

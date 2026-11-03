@@ -308,3 +308,49 @@ class AgentCommand(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class BackupPlan(Base):
+    """What to back up on a server, how often, how long to keep. Executed by the agent via restic."""
+
+    __tablename__ = "backup_plans"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    server_id: Mapped[int] = mapped_column(ForeignKey("servers.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(100))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    items: Mapped[list] = mapped_column(
+        JSON, default=list
+    )  # [{type: path|pg_dump|mysql_dump|docker_volume, ...}]
+    schedule: Mapped[str] = mapped_column(String(100), default="0 3 * * *")  # cron, dashboard TZ
+    retention: Mapped[dict] = mapped_column(JSON, default=dict)  # {daily, weekly, monthly}
+    max_age_hours: Mapped[int] = mapped_column(Integer, default=36)  # overdue alert threshold
+    repo_subpath: Mapped[str] = mapped_column(String(200), default="")  # under destination base path
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_ok_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_status: Mapped[str | None] = mapped_column(String(12), nullable=True)  # ok | failed | running
+    repo_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    snapshots: Mapped[list | None] = mapped_column(JSON, nullable=True)  # cached list from the agent
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class BackupRun(Base):
+    __tablename__ = "backup_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    plan_id: Mapped[int] = mapped_column(ForeignKey("backup_plans.id", ondelete="CASCADE"), index=True)
+    command_id: Mapped[int | None] = mapped_column(
+        ForeignKey("agent_commands.id", ondelete="SET NULL"), nullable=True
+    )
+    kind: Mapped[str] = mapped_column(String(20), default="backup")  # backup | restore | check | snapshots
+    trigger: Mapped[str] = mapped_column(String(10), default="schedule")  # schedule | manual
+    status: Mapped[str] = mapped_column(String(12), default="running")  # running | ok | failed
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    duration_s: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    added_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    results: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    output: Mapped[str | None] = mapped_column(Text, nullable=True)

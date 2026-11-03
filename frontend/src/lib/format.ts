@@ -63,5 +63,8 @@ export const INCIDENT_KIND: Record<string, string> = {
   disk_high: "диск заполнен",
   service_down: "сервис упал",
   unit_failed: "юнит failed",
-  restart_loop: "цикл перезапусков"
+  restart_loop: "цикл перезапусков",
+  backup_failed: "бэкап упал",
+  backup_overdue: "бэкап просрочен",
+  backup_check: "ошибка проверки бэкапа"
 };
