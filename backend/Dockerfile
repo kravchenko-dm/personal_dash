@@ -7,6 +7,8 @@ COPY backend/pyproject.toml ./
 RUN pip install --upgrade pip && pip install .
 
 COPY backend/app ./app
+COPY backend/alembic.ini ./alembic.ini
+COPY backend/alembic ./alembic
 COPY agent ./agent
 
 EXPOSE 8000

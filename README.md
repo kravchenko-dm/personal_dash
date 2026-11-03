@@ -209,8 +209,6 @@ Telegram webhook локально не работает без публично�
 API: `/api/projects`, `/api/projects/{id}` (детали одним запросом), `/features`, `/features/{id}/move`
 (`{"status", "index"}`), `/notes`, `/chats/{chat_row_id}`.
 
-Схема БД создаётся через `create_all` при старте. Это нормально до первого деплоя; после него для
-изменений схемы добавим Alembic.
 
 ## Мониторинг серверов
 
@@ -344,6 +342,24 @@ LLM_BASE_URL=              # пусто = адрес по умолчанию; д
 
 Код: `backend/app/services/llm/`. Новый вендор с другим протоколом — класс с методом
 `complete_json(system, user, schema)` и ветка в `get_llm()`.
+
+## Миграции схемы (Alembic)
+
+Схема управляется Alembic, при старте backend сам выполняет `alembic upgrade head`. База, созданная
+до появления миграций простым `create_all`, при первом запуске помечается ревизией `0001` и дальше
+обновляется как обычно.
+
+Изменили модели в `backend/app/models.py`:
+
+```bash
+cd backend
+DATABASE_URL=sqlite+aiosqlite:////tmp/mig.db alembic upgrade head          # свежая база на текущей схеме
+DATABASE_URL=sqlite+aiosqlite:////tmp/mig.db alembic revision --autogenerate -m "add foo"
+# проверить файл в alembic/versions/, затем:
+pytest tests/test_migrations.py                                           # миграции == модели
+```
+
+Тест `test_migrations_match_models` падает, если миграции и модели разошлись.
 
 ## Добавить свой источник баланса
 
