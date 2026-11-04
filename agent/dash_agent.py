@@ -40,7 +40,7 @@ import urllib.request
 import zipfile
 from typing import Any, Dict, List, Optional, Tuple
 
-AGENT_VERSION = "0.4.1"
+AGENT_VERSION = "0.4.2"
 CONFIG_PATH = os.environ.get("DASH_AGENT_CONFIG", "/etc/dash-agent/config.json")
 LOG_TAIL_MAX = 500
 BIN_DIR = "/opt/dash-agent/bin"
@@ -449,10 +449,21 @@ def execute(cfg: Dict[str, Any], command: Dict[str, Any]) -> Dict[str, Any]:
 # ---------- backup tooling (restic + rclone) ----------
 
 
+CACHE_DIR = "/var/cache/dash-agent"
+
+
 def _tool_env(extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     env = dict(os.environ)
     env["PATH"] = BIN_DIR + ":" + env.get("PATH", "/usr/local/bin:/usr/bin:/bin")
     env["RCLONE_CONFIG"] = RCLONE_CONF
+    # under systemd there is no $HOME: restic refuses to start without a cache dir, rclone wants a temp/home too
+    try:
+        os.makedirs(os.path.join(CACHE_DIR, "restic"), exist_ok=True)
+        env["RESTIC_CACHE_DIR"] = os.path.join(CACHE_DIR, "restic")
+    except OSError:
+        env.setdefault("RESTIC_CACHE_DIR", "/tmp/dash-agent-restic-cache")
+    env.setdefault("HOME", "/root" if os.geteuid() == 0 else os.path.expanduser("~"))
+    env.setdefault("XDG_CACHE_HOME", CACHE_DIR)
     if extra:
         env.update({k: str(v) for k, v in extra.items()})
     return env
@@ -599,10 +610,12 @@ def _backup_stream(item: Dict[str, Any], tags: List[str], env: Dict[str, str], t
         if producer.stdout:
             producer.stdout.close()
     _, perr = producer.communicate(timeout=60)
-    if producer.returncode != 0:
-        raise RuntimeError("%s failed (exit %s): %s" % (argv[0], producer.returncode, perr.decode(errors="ignore")[-400:]))
+    perr_text = perr.decode(errors="ignore")[-400:]
     if restic.returncode != 0:
-        raise RuntimeError("restic backup failed: %s" % (restic.stderr or restic.stdout)[-400:])
+        # if restic dies first the producer only sees a broken pipe, so restic's error is the real one
+        raise RuntimeError("restic backup failed: %s%s" % ((restic.stderr or restic.stdout)[-400:], ("; %s stderr: %s" % (argv[0], perr_text)) if perr_text.strip() else ""))
+    if producer.returncode != 0:
+        raise RuntimeError("%s failed (exit %s): %s" % (argv[0], producer.returncode, perr_text))
     summ = _parse_summary(restic.stdout)
     return {"item": item.get("name") or filename, "file": filename, "snapshot_id": summ.get("snapshot_id"), "added": summ.get("data_added"), "size": summ.get("total_bytes_processed")}
 
