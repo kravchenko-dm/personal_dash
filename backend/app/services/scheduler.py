@@ -122,6 +122,11 @@ def start() -> None:
     scheduler.add_job(
         job_caldav_reminders, IntervalTrigger(hours=1), id="caldav_reminders", replace_existing=True
     )
+    # monitoring + backups: HTTP checks honour each monitor's own interval, so a 1-minute tick is fine
+    scheduler.add_job(job_http_checks, IntervalTrigger(minutes=1), id="http_checks", replace_existing=True)
+    scheduler.add_job(job_silent_agents, IntervalTrigger(minutes=1), id="silent_agents", replace_existing=True)
+    scheduler.add_job(job_backups_tick, IntervalTrigger(minutes=1), id="backups_tick", replace_existing=True)
+    scheduler.add_job(job_cleanup_samples, CronTrigger(hour=3, minute=30), id="cleanup_samples", replace_existing=True)
     scheduler.start()
     log.info("scheduler started (%s)", get_settings().tz)
 
