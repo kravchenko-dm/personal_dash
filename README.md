@@ -275,6 +275,12 @@ curl -fsSL "https://<домен>/api/agent/install?token=dash_..." | sudo bash
 строки с подстрокой (префикс `#dash-disabled#`), `enable` возвращает их; вместо `user` можно указать
 `file` из `/etc/cron.d`. Перед правкой агент сохраняет копию в `/var/backups/dash-agent/`.
 
+Команда `config` правит `config.json` агента из дашборда: `{"kind":"config","args":{"action":"get"}}`
+показывает текущий конфиг (токен замаскирован), `{"action":"set","set":{"services":[...],"disks":["/"]}}`
+заменяет перечисленные ключи (`services`, `disks`, `discover_docker`, `discover_failed_units`,
+`interval`, `auto_update`); `url` и `token` через неё поменять нельзя. Старый конфиг сохраняется
+в `/var/backups/dash-agent/config-<дата>.json`.
+
 Проверить, что агент видит на сервере, без отправки: `python3 /opt/dash-agent/dash_agent.py report`.
 
 ### Внешние проверки и инциденты
@@ -391,6 +397,7 @@ cat ~/.config/rclone/rclone.conf
 | MySQL дамп | `mysqldump --single-transaction` аналогично |
 | Каталог | `restic backup <путь>` с исключениями, не выходит за пределы файловой системы |
 | Том Docker | `docker run --rm -v том:/data alpine tar` → restic из stdin |
+| ClickHouse таблица | `clickhouse-client --query "SELECT * FROM db.table FORMAT Native"` внутри контейнера (логин и пароль берутся из переменных `CLICKHOUSE_USER`/`CLICKHOUSE_PASSWORD` самого контейнера) → restic из stdin; восстановление: `clickhouse-client --query "INSERT INTO db.table FORMAT Native" < файл` |
 
 Для сервисов вне git добавьте их каталоги целиком: бэкап там единственная копия кода и конфигов.
 Исключайте кеши и скачиваемые модели (`node_modules`, `.venv`, веса нейросетей).

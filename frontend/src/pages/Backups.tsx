@@ -6,7 +6,7 @@ import { fmtBytes, fmtDate, relTime } from "../lib/format";
 import { Modal } from "../components/Modal";
 import { useToast } from "../components/Toast";
 
-const ITEM_LABEL: Record<BackupItem["type"], string> = { path: "Каталог", pg_dump: "PostgreSQL дамп", mysql_dump: "MySQL дамп", docker_volume: "Том Docker" };
+const ITEM_LABEL: Record<BackupItem["type"], string> = { path: "Каталог", pg_dump: "PostgreSQL дамп", mysql_dump: "MySQL дамп", docker_volume: "Том Docker", clickhouse: "ClickHouse таблица" };
 const SCHEDULES: [string, string][] = [
   ["0 3 * * *", "каждый день в 03:00"],
   ["0 */6 * * *", "каждые 6 часов"],
@@ -17,6 +17,7 @@ const SCHEDULES: [string, string][] = [
 function describeItem(it: BackupItem): string {
   if (it.type === "path") return `${it.path}${it.exclude?.length ? ` (кроме ${it.exclude.join(", ")})` : ""}`;
   if (it.type === "docker_volume") return `том ${it.volume}`;
+  if (it.type === "clickhouse") return `${it.database ?? "default"}.${it.table ?? "?"} · контейнер ${it.container}`;
   const where = it.mode === "dsn" ? "по DSN" : it.mode === "local" ? "локально" : `контейнер ${it.container}`;
   return `${it.database ?? "все базы"} · ${where}`;
 }
@@ -45,6 +46,13 @@ function ItemEditor({ item, onChange, onRemove }: { item: BackupItem; onChange: 
         </>
       )}
       {item.type === "docker_volume" && <input className="input" placeholder="имя тома (docker volume ls)" value={item.volume ?? ""} onChange={(e) => set({ volume: e.target.value })} />}
+      {item.type === "clickhouse" && (
+        <div className="row">
+          <input className="input" placeholder="контейнер clickhouse" value={item.container ?? ""} onChange={(e) => set({ container: e.target.value })} />
+          <input className="input" placeholder="база" value={item.database ?? ""} onChange={(e) => set({ database: e.target.value })} />
+          <input className="input" placeholder="таблица" value={item.table ?? ""} onChange={(e) => set({ table: e.target.value })} />
+        </div>
+      )}
       {(item.type === "pg_dump" || item.type === "mysql_dump") && (
         <>
           <div className="row" style={{ marginBottom: 6 }}>

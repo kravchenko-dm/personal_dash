@@ -347,8 +347,9 @@ export interface Incident {
 }
 
 export interface BackupItem {
-  type: "path" | "pg_dump" | "mysql_dump" | "docker_volume";
+  type: "path" | "pg_dump" | "mysql_dump" | "docker_volume" | "clickhouse";
   name?: string;
+  table?: string;
   path?: string;
   exclude?: string[];
   mode?: "docker" | "local" | "dsn";

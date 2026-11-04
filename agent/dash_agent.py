@@ -40,7 +40,7 @@ import urllib.request
 import zipfile
 from typing import Any, Dict, List, Optional, Tuple
 
-AGENT_VERSION = "0.4.3"
+AGENT_VERSION = "0.4.4"
 CONFIG_PATH = os.environ.get("DASH_AGENT_CONFIG", "/etc/dash-agent/config.json")
 LOG_TAIL_MAX = 500
 BIN_DIR = "/opt/dash-agent/bin"
@@ -285,9 +285,11 @@ def service_version(svc: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     path = svc.get("path")
     if path and os.path.isdir(os.path.join(path, ".git")) and which("git"):
         try:
-            sha = run(["git", "-C", path, "rev-parse", "--short", "HEAD"]).stdout.strip()
-            date = run(["git", "-C", path, "log", "-1", "--format=%cI"]).stdout.strip()
-            branch = run(["git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD"]).stdout.strip()
+            # the agent runs as root while the checkout usually belongs to a deploy user
+            git = ["git", "-c", "safe.directory=%s" % path, "-C", path]
+            sha = run(git + ["rev-parse", "--short", "HEAD"]).stdout.strip()
+            date = run(git + ["log", "-1", "--format=%cI"]).stdout.strip()
+            branch = run(git + ["rev-parse", "--abbrev-ref", "HEAD"]).stdout.strip()
             if sha:
                 return {"kind": "git", "value": sha, "branch": branch, "date": date}
         except (subprocess.TimeoutExpired, OSError):
@@ -432,6 +434,8 @@ def execute(cfg: Dict[str, Any], command: Dict[str, Any]) -> Dict[str, Any]:
             return cmd_check(args)
         if kind == "cron":
             return cmd_cron(args)
+        if kind == "config":
+            return cmd_config(cfg, args)
         if kind == "script":
             # only scripts the dashboard installed under /etc/dash-agent/scripts are allowed
             name = os.path.basename(str(args.get("name", "")))
@@ -446,6 +450,58 @@ def execute(cfg: Dict[str, Any], command: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "output": "error: %s" % exc}
 
+
+
+# ---------- config managed from the dashboard ----------
+
+CONFIG_KEYS = ("services", "disks", "discover_docker", "discover_failed_units", "interval", "auto_update")
+SERVICE_KINDS = ("systemd", "docker", "process")
+
+
+def _masked_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(cfg)
+    if out.get("token"):
+        out["token"] = out["token"][:8] + "..."
+    return out
+
+
+def cmd_config(cfg: Dict[str, Any], args: Dict[str, Any]) -> Dict[str, Any]:
+    """get: show config (token masked). set: merge whitelisted keys into config.json; url/token never change."""
+    action = str(args.get("action") or "get")
+    if action == "get":
+        return {"ok": True, "output": json.dumps(_masked_config(cfg), ensure_ascii=False, indent=2)}
+    if action != "set":
+        return {"ok": False, "output": "unknown config action %r" % action}
+    patch = args.get("set") or {}
+    bad = [k for k in patch if k not in CONFIG_KEYS]
+    if bad:
+        return {"ok": False, "output": "keys not allowed: %s (allowed: %s)" % (", ".join(bad), ", ".join(CONFIG_KEYS))}
+    services = patch.get("services")
+    if services is not None:
+        if not isinstance(services, list):
+            return {"ok": False, "output": "services must be a list"}
+        for svc in services:
+            if not isinstance(svc, dict) or not svc.get("name") or svc.get("kind") not in SERVICE_KINDS:
+                return {"ok": False, "output": "bad service entry: %r" % (svc,)}
+    with open(CONFIG_PATH) as f:
+        raw = f.read()
+    current = json.loads(raw)
+    current.update(patch)
+    os.makedirs(CRON_BACKUP_DIR, exist_ok=True)
+    saved = os.path.join(CRON_BACKUP_DIR, "config-%s.json" % time.strftime("%Y%m%d-%H%M%S"))
+    with open(saved, "w") as f:
+        f.write(raw)
+    os.chmod(saved, 0o600)
+    tmp = CONFIG_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(current, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, CONFIG_PATH)
+    lines = ["config updated (%s), previous copy: %s" % (", ".join(sorted(patch)), saved)]
+    for svc in collect_services(current):
+        lines.append("  %-16s %-8s %s" % (svc.get("name"), svc.get("status"), svc.get("detail") or ""))
+    return {"ok": True, "output": "\n".join(lines)}
 
 
 # ---------- cron (read-only listing + commenting lines in/out) ----------
@@ -717,6 +773,19 @@ def _dump_command(item: Dict[str, Any]) -> Tuple[List[str], str]:
         if mode == "docker":
             return ["docker", "exec", "-i", item["container"]] + my, name + ".sql"
         return my, name + ".sql"
+    if kind == "clickhouse":
+        ident = r"^[A-Za-z0-9_]+$"
+        db, table = str(item.get("database") or "default"), str(item.get("table") or "")
+        import re as _re
+        if not _re.match(ident, db) or not _re.match(ident, table):
+            raise RuntimeError("clickhouse: database/table must be plain identifiers")
+        query = "SELECT * FROM `%s`.`%s` FORMAT Native" % (db, table)
+        # credentials come from the container's own CLICKHOUSE_USER/CLICKHOUSE_PASSWORD (official image), if set
+        sh = 'exec clickhouse-client ${CLICKHOUSE_USER:+--user "$CLICKHOUSE_USER"} ${CLICKHOUSE_PASSWORD:+--password "$CLICKHOUSE_PASSWORD"} --query "$0"'
+        cmd = ["clickhouse-client"] if mode != "docker" else ["docker", "exec", "-i", item["container"], "sh", "-c", sh, query]
+        if mode != "docker":
+            cmd += ["--query", query]
+        return cmd, "%s.%s.native" % (db, table)
     if kind == "docker_volume":
         vol = item["volume"]
         return ["docker", "run", "--rm", "-v", "%s:/data:ro" % vol, "alpine", "tar", "cf", "-", "-C", "/data", "."], (item.get("name") or vol) + ".tar"

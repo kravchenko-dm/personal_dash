@@ -46,7 +46,7 @@ class ServerCreated(ServerOut):
 
 
 class CommandIn(BaseModel):
-    kind: Literal["ping", "restart", "stop", "start", "logs", "script", "cron"]
+    kind: Literal["ping", "restart", "stop", "start", "logs", "script", "cron", "config"]
     args: dict[str, Any] = Field(default_factory=dict)
 
 

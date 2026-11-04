@@ -1,3 +1,4 @@
+import re
 """Backup destination settings and per-project backup plans."""
 
 from datetime import datetime
@@ -16,7 +17,7 @@ from app.services import backups as svc
 
 router = APIRouter(prefix="/api", tags=["backups"], dependencies=[Depends(require_auth)])
 
-ItemType = Literal["path", "pg_dump", "mysql_dump", "docker_volume"]
+ItemType = Literal["path", "pg_dump", "mysql_dump", "docker_volume", "clickhouse"]
 
 
 class DestinationIn(BaseModel):
@@ -98,7 +99,14 @@ def _validate_items(items: list[dict[str, Any]]) -> None:
             raise HTTPException(400, f"Элемент «{t}» в режиме docker требует имя контейнера")
         if t == "docker_volume" and not it.get("volume"):
             raise HTTPException(400, "Элемент «том docker» без имени тома")
-        if t not in ("path", "pg_dump", "mysql_dump", "docker_volume"):
+        if t == "clickhouse":
+            if it.get("mode", "docker") == "docker" and not it.get("container"):
+                raise HTTPException(400, "Элемент «ClickHouse» в режиме docker требует имя контейнера")
+            if not re.fullmatch(r"[A-Za-z0-9_]+", str(it.get("table") or "")) or not re.fullmatch(
+                r"[A-Za-z0-9_]+", str(it.get("database") or "default")
+            ):
+                raise HTTPException(400, "Элемент «ClickHouse»: база и таблица — простые идентификаторы")
+        if t not in ("path", "pg_dump", "mysql_dump", "docker_volume", "clickhouse"):
             raise HTTPException(400, f"Неизвестный тип элемента: {t}")
 
 

@@ -1,5 +1,7 @@
 import importlib.util
 import json
+
+import pytest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -387,3 +389,31 @@ def test_agent_cron_toggle_roundtrip():
     assert agent._toggle_lines(disabled, "backup.sh", True)[1] == []
     assert agent.cmd_cron({"action": "disable", "match": "ab"})["ok"] is False
     assert agent.cmd_cron({"action": "disable", "match": "backup", "file": "/etc/shadow"})["ok"] is False
+
+
+def test_agent_config_command(tmp_path, monkeypatch):
+    agent = load_agent()
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text('{"url": "https://d", "token": "dash_secret_value", "services": []}')
+    monkeypatch.setattr(agent, "CONFIG_PATH", str(cfg_path))
+    monkeypatch.setattr(agent, "CRON_BACKUP_DIR", str(tmp_path / "bak"))
+    monkeypatch.setattr(agent, "collect_services", lambda cfg: [{"name": s["name"], "status": "running", "detail": ""} for s in cfg["services"]])
+    cfg = json.loads(cfg_path.read_text())
+    shown = agent.cmd_config(cfg, {"action": "get"})
+    assert shown["ok"] and "dash_secret_value" not in shown["output"]
+    assert agent.cmd_config(cfg, {"action": "set", "set": {"token": "x"}})["ok"] is False
+    assert agent.cmd_config(cfg, {"action": "set", "set": {"services": [{"name": "a", "kind": "weird"}]}})["ok"] is False
+    res = agent.cmd_config(cfg, {"action": "set", "set": {"services": [{"name": "api", "kind": "docker", "container": "api-1"}], "disks": ["/"]}})
+    assert res["ok"], res
+    new = json.loads(cfg_path.read_text())
+    assert new["token"] == "dash_secret_value" and new["services"][0]["container"] == "api-1" and new["disks"] == ["/"]
+    assert list((tmp_path / "bak").iterdir())  # previous copy kept
+
+
+def test_agent_clickhouse_dump_command():
+    agent = load_agent()
+    argv, fname = agent._dump_command({"type": "clickhouse", "container": "ch", "database": "metrics", "table": "post_metrics"})
+    assert argv[:4] == ["docker", "exec", "-i", "ch"] and argv[-1].startswith("SELECT * FROM `metrics`.`post_metrics`")
+    assert fname == "metrics.post_metrics.native"
+    with pytest.raises(RuntimeError):
+        agent._dump_command({"type": "clickhouse", "container": "ch", "database": "metrics", "table": "x; drop"})
