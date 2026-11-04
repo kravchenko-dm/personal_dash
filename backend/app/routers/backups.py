@@ -1,6 +1,6 @@
-import re
 """Backup destination settings and per-project backup plans."""
 
+import re
 from datetime import datetime
 from typing import Any, Literal
 
