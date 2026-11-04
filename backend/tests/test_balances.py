@@ -201,3 +201,20 @@ async def test_subgram_provider(monkeypatch):
     assert result.extra["bots"] == [{"bot": "my_bot", "revenue": 532.4, "followers": 120}]
     with pytest.raises(ValueError, match="Invalid token"):
         await SubgramProvider().fetch({"api_token": "bad"})
+
+
+async def test_cheatbot_provider(monkeypatch):
+    from app.integrations.providers.cheatbot import CheatBotProvider
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "api.cheatbot.ru" and request.url.path == "/pb/profile/info"
+        if request.url.params.get("access-token") != "k1":
+            return httpx.Response(401, json={"name": "Unauthorized", "message": "Your request was made with invalid credentials."})
+        return httpx.Response(200, json={"balance": 250.75, "email": "me@example.com", "activeTask": 2})
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    result = await CheatBotProvider().fetch({"api_key": "k1"})
+    assert result.value == 250.75 and result.currency == "RUB" and result.extra["active_tasks"] == 2
+    with pytest.raises(ValueError, match="invalid credentials"):
+        await CheatBotProvider().fetch({"api_key": "nope"})
