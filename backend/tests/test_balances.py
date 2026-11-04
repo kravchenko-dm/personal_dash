@@ -137,3 +137,41 @@ async def test_hosting_providers_listed(client, auth):
     r = await client.get("/api/balances/providers", headers=auth)
     keys = {p["key"] for p in r.json()}
     assert {"vdsina", "clo"} <= keys
+
+
+async def test_smm_panel_provider(monkeypatch):
+    from app.integrations.providers.smm_panel import SmmPanelProvider
+
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.method)
+        if request.method == "POST":
+            body = request.content.decode()
+            assert "key=secret" in body and "action=balance" in body
+            return httpx.Response(200, json={"balance": "100.84", "currency": "USD"})
+        return httpx.Response(405)
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    result = await SmmPanelProvider().fetch({"api_url": "https://panel.test/api/v2", "api_key": "secret"})
+    assert result.value == 100.84 and result.currency == "USD" and calls == ["POST"]
+
+    # panel that only accepts GET: POST answers with HTML, GET with JSON
+    def handler2(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(200, text="<html>nope</html>")
+        assert request.url.params["action"] == "balance"
+        return httpx.Response(200, json={"balance": "12,5", "currency": "RUB"})
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler2), **kw))
+    result = await SmmPanelProvider().fetch({"api_url": "https://panel.test/api/v2", "api_key": "k"})
+    assert result.value == 12.5 and result.currency == "RUB"
+
+    # wrong key: the panel's error message is surfaced
+    monkeypatch.setattr(
+        httpx, "AsyncClient",
+        lambda **kw: real(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"error": "Invalid API key"})), **kw),
+    )
+    with pytest.raises(ValueError, match="Invalid API key"):
+        await SmmPanelProvider().fetch({"api_url": "https://panel.test/api/v2", "api_key": "bad"})
