@@ -84,3 +84,56 @@ async def test_http_json_bad_path(monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=transport, **kw))
     with pytest.raises(ValueError):
         await HttpJsonProvider().fetch({"url": "https://x", "path": "$.b"})
+
+
+async def test_vdsina_provider(monkeypatch):
+    from app.integrations.providers.vdsina import VdsinaProvider
+
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.url.host, request.headers["Authorization"]))
+        if request.headers["Authorization"] == "tok":
+            return httpx.Response(401, json={"status": "error"})
+        return httpx.Response(200, json={"status": "ok", "data": {"real": "150.50", "bonus": "10", "partner": "0"}})
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    result = await VdsinaProvider().fetch({"api_key": "tok", "host": "vdsina.com"})
+    assert result.value == 150.5 and result.currency == "USD" and result.extra["total"] == 160.5
+    assert seen == [("userapi.vdsina.com", "tok"), ("userapi.vdsina.com", "Bearer tok")]
+    result = await VdsinaProvider().fetch({"api_key": "ok-token"})
+    assert result.currency == "RUB" and seen[-1][0] == "userapi.vdsina.ru"
+    with pytest.raises(ValueError):
+        await VdsinaProvider().fetch({"api_key": "x", "host": "example.com"})
+
+
+async def test_clo_provider(monkeypatch):
+    from app.integrations.providers.clo import CloProvider
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url == "https://api.clo.ru/v2/balance" and request.headers["Authorization"] == "Bearer jwt"
+        return httpx.Response(
+            200,
+            json={
+                "result": {
+                    "balance": 1234.56,
+                    "cost": {"hour": 1.2, "month": 870.0},
+                    "cost_active": {"hour": 1.0, "month": 700.0},
+                    "credit_limit": 0,
+                    "days_left_until_zero": 42,
+                }
+            },
+        )
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    result = await CloProvider().fetch({"api_key": "jwt"})
+    assert result.value == 1234.56 and result.currency == "RUB"
+    assert result.extra["cost_month"] == 870.0 and result.extra["days_left_until_zero"] == 42
+
+
+async def test_hosting_providers_listed(client, auth):
+    r = await client.get("/api/balances/providers", headers=auth)
+    keys = {p["key"] for p in r.json()}
+    assert {"vdsina", "clo"} <= keys

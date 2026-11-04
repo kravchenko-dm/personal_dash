@@ -1,11 +1,14 @@
 from app.integrations.base import BalanceProvider
+from app.integrations.providers.clo import CloProvider
 from app.integrations.providers.deepseek import DeepSeekProvider
 from app.integrations.providers.http_json import HttpJsonProvider
 from app.integrations.providers.manual import ManualProvider
 from app.integrations.providers.openrouter import OpenRouterProvider
+from app.integrations.providers.vdsina import VdsinaProvider
 
 PROVIDERS: dict[str, type[BalanceProvider]] = {
-    p.key: p for p in (ManualProvider, HttpJsonProvider, OpenRouterProvider, DeepSeekProvider)
+    p.key: p
+    for p in (ManualProvider, HttpJsonProvider, OpenRouterProvider, DeepSeekProvider, VdsinaProvider, CloProvider)
 }
 
 
