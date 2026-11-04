@@ -5,11 +5,12 @@ from app.integrations.providers.http_json import HttpJsonProvider
 from app.integrations.providers.manual import ManualProvider
 from app.integrations.providers.openrouter import OpenRouterProvider
 from app.integrations.providers.smm_panel import SmmPanelProvider
+from app.integrations.providers.subgram import SubgramProvider
 from app.integrations.providers.vdsina import VdsinaProvider
 
 PROVIDERS: dict[str, type[BalanceProvider]] = {
     p.key: p
-    for p in (ManualProvider, HttpJsonProvider, OpenRouterProvider, DeepSeekProvider, VdsinaProvider, CloProvider, SmmPanelProvider)
+    for p in (ManualProvider, HttpJsonProvider, OpenRouterProvider, DeepSeekProvider, VdsinaProvider, CloProvider, SmmPanelProvider, SubgramProvider)
 }
 
 

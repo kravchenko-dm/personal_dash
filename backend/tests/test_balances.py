@@ -175,3 +175,29 @@ async def test_smm_panel_provider(monkeypatch):
     )
     with pytest.raises(ValueError, match="Invalid API key"):
         await SmmPanelProvider().fetch({"api_url": "https://panel.test/api/v2", "api_key": "bad"})
+
+
+async def test_subgram_provider(monkeypatch):
+    from app.integrations.providers.subgram import SubgramProvider
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST" and request.url == "https://api.subgram.org/get-balance"
+        if request.headers["Auth"] != "tok":
+            return httpx.Response(401, json={"status": "error", "code": 401, "message": "Invalid token"})
+        return httpx.Response(
+            200,
+            json={
+                "status": "ok",
+                "code": 200,
+                "balance": 1532.4,
+                "bots_info": [{"bot_id": 1, "bot_username": "my_bot", "total_followers": 120, "revenue": 532.4}],
+            },
+        )
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    result = await SubgramProvider().fetch({"api_token": "tok"})
+    assert result.value == 1532.4 and result.currency == "RUB"
+    assert result.extra["bots"] == [{"bot": "my_bot", "revenue": 532.4, "followers": 120}]
+    with pytest.raises(ValueError, match="Invalid token"):
+        await SubgramProvider().fetch({"api_token": "bad"})
