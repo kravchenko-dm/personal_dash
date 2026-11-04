@@ -40,7 +40,7 @@ import urllib.request
 import zipfile
 from typing import Any, Dict, List, Optional, Tuple
 
-AGENT_VERSION = "0.4.4"
+AGENT_VERSION = "0.4.5"
 CONFIG_PATH = os.environ.get("DASH_AGENT_CONFIG", "/etc/dash-agent/config.json")
 LOG_TAIL_MAX = 500
 BIN_DIR = "/opt/dash-agent/bin"
@@ -805,6 +805,9 @@ def _backup_stream(item: Dict[str, Any], tags: List[str], env: Dict[str, str], t
             producer.stdout.close()
     _, perr = producer.communicate(timeout=60)
     perr_text = perr.decode(errors="ignore")[-400:]
+    if restic.returncode != 0 and producer.returncode == 0 and "no data read" in (restic.stdout + restic.stderr):
+        # the dump produced zero bytes (e.g. an empty ClickHouse table): nothing to store, not an error
+        return {"item": item.get("name") or filename, "file": filename, "snapshot_id": None, "empty": True, "added": 0, "size": 0}
     if restic.returncode != 0:
         # if restic dies first the producer only sees a broken pipe, so restic's error is the real one
         raise RuntimeError("restic backup failed: %s%s" % ((restic.stderr or restic.stdout)[-400:], ("; %s stderr: %s" % (argv[0], perr_text)) if perr_text.strip() else ""))
@@ -842,7 +845,10 @@ def cmd_backup(a: Dict[str, Any]) -> Dict[str, Any]:
                 results.append(_backup_path(item, tags, env, per_item_timeout))
             else:
                 results.append(_backup_stream(item, tags, env, per_item_timeout))
-            log_lines.append("ok: %s -> %s" % (results[-1]["item"], results[-1].get("snapshot_id")))
+            if results[-1].get("empty"):
+                log_lines.append("empty: %s (dump produced no data, nothing stored)" % results[-1]["item"])
+            else:
+                log_lines.append("ok: %s -> %s" % (results[-1]["item"], results[-1].get("snapshot_id")))
         except Exception as exc:  # noqa: BLE001
             errors.append("%s: %s" % (item.get("name") or item["type"], exc))
             log_lines.append("FAILED: %s: %s" % (item.get("name") or item["type"], exc))

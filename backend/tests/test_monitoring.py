@@ -416,3 +416,18 @@ def test_agent_clickhouse_dump_command():
     assert fname == "metrics.post_metrics.native"
     with pytest.raises(RuntimeError):
         agent._dump_command({"type": "clickhouse", "container": "ch", "database": "metrics", "table": "x; drop"})
+
+
+def test_agent_empty_stream_is_not_a_failure(monkeypatch):
+    agent = load_agent()
+    monkeypatch.setattr(agent, "ensure_restic", lambda: "/bin/true")
+    monkeypatch.setattr(agent, "_dump_command", lambda item: (["/bin/true"], "t.native"))
+
+    class FakeRestic:
+        returncode = 1
+        stdout = '{"message_type":"error","error":{"message":"read t.native: no data read"}}'
+        stderr = ""
+
+    monkeypatch.setattr(agent.subprocess, "run", lambda *a, **k: FakeRestic())
+    res = agent._backup_stream({"type": "clickhouse", "name": "ch"}, ["plan:1"], {}, 60)
+    assert res["empty"] is True and res["snapshot_id"] is None
