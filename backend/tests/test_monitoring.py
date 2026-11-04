@@ -373,3 +373,17 @@ async def test_idle_scheduled_service_is_not_an_incident(client, auth):
     )
     inc = (await client.get("/api/incidents", headers=auth)).json()
     assert len(inc) == 1 and "stale" in inc[0]["message"]
+
+
+def test_agent_cron_toggle_roundtrip():
+    agent = load_agent()
+    text = "MAILTO=x\n30 23 * * * /home/dev/backup.sh >> /var/log/b.log 2>&1\n0 1 * * * echo hi\n"
+    disabled, changed = agent._toggle_lines(text, "backup.sh", True)
+    assert changed == ["30 23 * * * /home/dev/backup.sh >> /var/log/b.log 2>&1"]
+    assert "#dash-disabled# 30 23" in disabled and "0 1 * * * echo hi" in disabled
+    restored, changed2 = agent._toggle_lines(disabled, "backup.sh", False)
+    assert restored == text and changed2 == changed
+    # a second disable is a no-op, short matches are refused, only real cron files may be edited
+    assert agent._toggle_lines(disabled, "backup.sh", True)[1] == []
+    assert agent.cmd_cron({"action": "disable", "match": "ab"})["ok"] is False
+    assert agent.cmd_cron({"action": "disable", "match": "backup", "file": "/etc/shadow"})["ok"] is False

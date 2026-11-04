@@ -267,7 +267,13 @@ curl -fsSL "https://<домен>/api/agent/install?token=dash_..." | sudo bash
 
 Команды из дашборда (кнопки на карточке сервера): ping, перезапуск, стоп/старт, последние строки
 журнала (`journalctl -u` или `docker logs`). Произвольные команды агент не выполняет; скрипты можно
-класть в `/etc/dash-agent/scripts/` и вызывать по имени, это задел под бэкапы.
+класть в `/etc/dash-agent/scripts/` и вызывать по имени.
+
+Отдельная команда `cron` (через API `POST /api/projects/{id}/servers/{sid}/commands`):
+`{"kind":"cron","args":{"action":"list"}}` показывает crontab'ы пользователей, `/etc/crontab`,
+`/etc/cron.d/*` и systemd-таймеры; `{"action":"disable","match":"backup.sh","user":"dev"}` комментирует
+строки с подстрокой (префикс `#dash-disabled#`), `enable` возвращает их; вместо `user` можно указать
+`file` из `/etc/cron.d`. Перед правкой агент сохраняет копию в `/var/backups/dash-agent/`.
 
 Проверить, что агент видит на сервере, без отправки: `python3 /opt/dash-agent/dash_agent.py report`.
 

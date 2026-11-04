@@ -40,7 +40,7 @@ import urllib.request
 import zipfile
 from typing import Any, Dict, List, Optional, Tuple
 
-AGENT_VERSION = "0.4.2"
+AGENT_VERSION = "0.4.3"
 CONFIG_PATH = os.environ.get("DASH_AGENT_CONFIG", "/etc/dash-agent/config.json")
 LOG_TAIL_MAX = 500
 BIN_DIR = "/opt/dash-agent/bin"
@@ -430,6 +430,8 @@ def execute(cfg: Dict[str, Any], command: Dict[str, Any]) -> Dict[str, Any]:
             return cmd_restore(args)
         if kind == "backup_check":
             return cmd_check(args)
+        if kind == "cron":
+            return cmd_cron(args)
         if kind == "script":
             # only scripts the dashboard installed under /etc/dash-agent/scripts are allowed
             name = os.path.basename(str(args.get("name", "")))
@@ -444,6 +446,129 @@ def execute(cfg: Dict[str, Any], command: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "output": "error: %s" % exc}
 
+
+
+# ---------- cron (read-only listing + commenting lines in/out) ----------
+
+CRON_BACKUP_DIR = "/var/backups/dash-agent"
+
+
+def _cron_users() -> List[str]:
+    users = ["root"]
+    try:
+        with open("/etc/passwd") as f:
+            for line in f:
+                parts = line.split(":")
+                if len(parts) > 6 and parts[0] != "root" and 1000 <= int(parts[2]) < 60000:
+                    users.append(parts[0])
+    except (OSError, ValueError):
+        pass
+    return users
+
+
+def _read_user_crontab(user: str) -> Optional[str]:
+    try:
+        res = run(["crontab", "-l", "-u", user], timeout=20)
+    except OSError:  # no cron installed at all
+        return None
+    if res.returncode != 0:
+        return None
+    return res.stdout
+
+
+def _cron_files() -> List[str]:
+    files = []
+    if os.path.isfile("/etc/crontab"):
+        files.append("/etc/crontab")
+    if os.path.isdir("/etc/cron.d"):
+        files.extend(sorted(os.path.join("/etc/cron.d", n) for n in os.listdir("/etc/cron.d")))
+    return [f for f in files if os.path.isfile(f)]
+
+
+def _toggle_lines(text: str, match: str, disable: bool) -> Tuple[str, List[str]]:
+    """Comment out (or back in) every non-empty line containing `match`. Returns new text + changed lines."""
+    out, changed = [], []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if match in line and stripped:
+            if disable and not stripped.startswith("#"):
+                out.append("#dash-disabled# " + line)
+                changed.append(line)
+                continue
+            if not disable and stripped.startswith("#dash-disabled#"):
+                restored = line.split("#dash-disabled# ", 1)[1] if "#dash-disabled# " in line else stripped.lstrip("#").strip()
+                out.append(restored)
+                changed.append(restored)
+                continue
+        out.append(line)
+    return "\n".join(out) + ("\n" if text.endswith("\n") or out else ""), changed
+
+
+def _save_cron_backup(label: str, text: str) -> str:
+    os.makedirs(CRON_BACKUP_DIR, exist_ok=True)
+    path = os.path.join(CRON_BACKUP_DIR, "crontab-%s-%s" % (label.replace("/", "_"), time.strftime("%Y%m%d-%H%M%S")))
+    with open(path, "w") as f:
+        f.write(text)
+    os.chmod(path, 0o600)
+    return path
+
+
+def cmd_cron(args: Dict[str, Any]) -> Dict[str, Any]:
+    action = str(args.get("action") or "list")
+    if action == "list":
+        chunks = []
+        for user in _cron_users():
+            text = _read_user_crontab(user)
+            if text and text.strip():
+                chunks.append("### crontab -u %s\n%s" % (user, text.rstrip()))
+        for path in _cron_files():
+            try:
+                with open(path) as f:
+                    body = f.read()
+            except OSError:
+                continue
+            lines = [l for l in body.splitlines() if l.strip() and not l.lstrip().startswith("#")]
+            if lines:
+                chunks.append("### %s\n%s" % (path, "\n".join(lines)))
+        try:
+            timers = run(["systemctl", "list-timers", "--all", "--no-pager", "--no-legend"], timeout=20)
+            if timers.returncode == 0 and timers.stdout.strip():
+                chunks.append("### systemd timers\n%s" % timers.stdout.rstrip())
+        except OSError:
+            pass
+        return {"ok": True, "output": "\n\n".join(chunks) or "no cron entries found"}
+    if action not in ("disable", "enable"):
+        return {"ok": False, "output": "unknown cron action %r" % action}
+    match = str(args.get("match") or "").strip()
+    if len(match) < 3:
+        return {"ok": False, "output": "cron %s needs a 'match' substring of at least 3 characters" % action}
+    disable = action == "disable"
+    user, path = args.get("user"), args.get("file")
+    if path:
+        path = os.path.realpath(str(path))
+        if path not in _cron_files():
+            return {"ok": False, "output": "not a cron file: %s" % path}
+        with open(path) as f:
+            text = f.read()
+        new_text, changed = _toggle_lines(text, match, disable)
+        if not changed:
+            return {"ok": False, "output": "no matching active lines in %s" % path}
+        saved = _save_cron_backup(os.path.basename(path), text)
+        with open(path, "w") as f:
+            f.write(new_text)
+        return {"ok": True, "output": "%sd %d line(s) in %s (copy: %s):\n%s" % (action, len(changed), path, saved, "\n".join(changed))}
+    user = str(user or "root")
+    text = _read_user_crontab(user)
+    if text is None:
+        return {"ok": False, "output": "no crontab for user %s" % user}
+    new_text, changed = _toggle_lines(text, match, disable)
+    if not changed:
+        return {"ok": False, "output": "no matching %s lines in crontab of %s" % ("active" if disable else "disabled", user)}
+    saved = _save_cron_backup(user, text)
+    res = subprocess.run(["crontab", "-u", user, "-"], input=new_text, capture_output=True, text=True, timeout=20)
+    if res.returncode != 0:
+        return {"ok": False, "output": "crontab write failed: %s" % (res.stderr or res.stdout)[-400:]}
+    return {"ok": True, "output": "%sd %d line(s) in crontab of %s (copy: %s):\n%s" % (action, len(changed), user, saved, "\n".join(changed))}
 
 
 # ---------- backup tooling (restic + rclone) ----------
