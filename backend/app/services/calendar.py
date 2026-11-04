@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import jwt
 from google.auth.transport.requests import Request as GoogleRequest
@@ -16,7 +16,10 @@ from app.config import get_settings
 from app.models import OAuthToken, Setting
 
 log = logging.getLogger(__name__)
-SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
+SCOPES = [
+    "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/calendar.events",  # creating events from the dashboard
+]
 PROVIDER = "google"
 
 
@@ -187,3 +190,45 @@ async def list_events(db: AsyncSession, days: int = 7, start: datetime | None = 
         return events
 
     return await asyncio.to_thread(_run)
+
+
+async def create_event(
+    db: AsyncSession,
+    calendar_id: str,
+    title: str,
+    start: datetime | date,
+    end: datetime | date,
+    location: str | None = None,
+    description: str | None = None,
+) -> dict:
+    creds = await _credentials(db)
+    if "https://www.googleapis.com/auth/calendar.events" not in (creds.scopes or []):
+        raise RuntimeError("Google подключён только для чтения: отключите и подключите календарь заново")
+    all_day = not isinstance(start, datetime)
+    body: dict = {
+        "summary": title,
+        "start": {"date": start.isoformat()} if all_day else {"dateTime": start.isoformat()},
+        "end": {"date": end.isoformat()} if all_day else {"dateTime": end.isoformat()},
+    }
+    if location:
+        body["location"] = location
+    if description:
+        body["description"] = description
+
+    def _run():
+        return _service(creds).events().insert(calendarId=calendar_id, body=body).execute()
+
+    e = await asyncio.to_thread(_run)
+    return {
+        "id": e["id"],
+        "calendar_id": calendar_id,
+        "calendar": "",
+        "source": "google",
+        "title": title,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "all_day": all_day,
+        "location": location,
+        "link": e.get("htmlLink"),
+        "description": description or "",
+    }

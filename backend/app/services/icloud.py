@@ -5,6 +5,7 @@ App-Specific Passwords). All caldav calls are blocking and run in a thread."""
 
 import asyncio
 import logging
+import uuid
 from datetime import date, datetime, timedelta, timezone
 
 import caldav
@@ -120,3 +121,51 @@ async def list_events(db: AsyncSession, days: int = 7, start: datetime | None = 
     ids = await selected_calendars(db)
     begin = start or datetime.now(timezone.utc)
     return await asyncio.to_thread(_events_sync, ids, begin, begin + timedelta(days=days))
+
+
+def _create_event_sync(
+    calendar_id: str,
+    title: str,
+    start: datetime | date,
+    end: datetime | date,
+    location: str | None,
+    description: str | None,
+) -> dict:
+    with _client() as client:
+        cals = client.principal().calendars()
+        cal = next((c for c in cals if str(c.url) == calendar_id), None)
+        if cal is None:
+            raise ValueError("календарь iCloud не найден")
+        data: dict = {"summary": title, "dtstart": start, "dtend": end, "uid": f"dash-{uuid.uuid4()}"}
+        if location:
+            data["location"] = location
+        if description:
+            data["description"] = description
+        cal.save_event(**data)
+        all_day = not isinstance(start, datetime)
+        return {
+            "id": data["uid"],
+            "calendar_id": calendar_id,
+            "calendar": cal.get_display_name() or "",
+            "source": "icloud",
+            "title": title,
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "all_day": all_day,
+            "location": location,
+            "link": None,
+            "description": description or "",
+        }
+
+
+async def create_event(
+    calendar_id: str,
+    title: str,
+    start: datetime | date,
+    end: datetime | date,
+    location: str | None = None,
+    description: str | None = None,
+) -> dict:
+    if not enabled():
+        raise RuntimeError("iCloud не настроен")
+    return await asyncio.to_thread(_create_event_sync, calendar_id, title, start, end, location, description)

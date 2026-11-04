@@ -1,6 +1,9 @@
+from datetime import date, datetime, timedelta
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import require_auth
@@ -15,6 +18,35 @@ router = APIRouter(prefix="/api/calendar", tags=["calendar"])
 class SelectedIn(BaseModel):
     ids: list[str]
     source: str = "google"
+
+
+class EventIn(BaseModel):
+    source: Literal["google", "icloud"]
+    calendar_id: str = Field(min_length=1)
+    title: str = Field(min_length=1, max_length=300)
+    start: str  # ISO 8601 datetime with offset, or YYYY-MM-DD when all_day
+    end: str | None = None
+    all_day: bool = False
+    location: str | None = Field(default=None, max_length=300)
+    description: str | None = Field(default=None, max_length=2000)
+
+    def bounds(self) -> tuple[datetime | date, datetime | date]:
+        try:
+            if self.all_day:
+                start = date.fromisoformat(self.start[:10])
+                end = date.fromisoformat(self.end[:10]) if self.end else start + timedelta(days=1)
+                if end <= start:
+                    end = start + timedelta(days=1)
+                return start, end
+            start_dt = datetime.fromisoformat(self.start.replace("Z", "+00:00"))
+            if start_dt.tzinfo is None:
+                raise ValueError("время без часового пояса")
+            end_dt = datetime.fromisoformat(self.end.replace("Z", "+00:00")) if self.end else start_dt + timedelta(hours=1)
+            if end_dt <= start_dt:
+                end_dt = start_dt + timedelta(hours=1)
+            return start_dt, end_dt
+        except ValueError as exc:
+            raise HTTPException(400, f"Неверная дата: {exc}") from exc
 
 
 @router.get("/oauth/start", dependencies=[Depends(require_auth)])
@@ -81,3 +113,14 @@ async def events(days: int = 7, db: AsyncSession = Depends(get_db)):
         return {"connected": False, "events": [], "errors": []}
     found, errors = await agenda.events(db, days=days)
     return {"connected": True, "events": found, "errors": errors}
+
+
+@router.post("/events", dependencies=[Depends(require_auth)], status_code=201)
+async def create_event(body: EventIn, db: AsyncSession = Depends(get_db)):
+    start, end = body.bounds()
+    try:
+        if body.source == "icloud":
+            return await icloud.create_event(body.calendar_id, body.title, start, end, body.location, body.description)
+        return await svc.create_event(db, body.calendar_id, body.title, start, end, body.location, body.description)
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from exc

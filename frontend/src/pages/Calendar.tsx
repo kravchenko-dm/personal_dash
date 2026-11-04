@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router-dom";
 import { get, post, put, type CalendarEvent, type Status } from "../lib/api";
+import { Modal } from "../components/Modal";
 import { useFetch } from "../lib/useFetch";
 import { useToast } from "../components/Toast";
 
@@ -56,12 +57,105 @@ export function EventList({ events, compact = false }: { events: CalendarEvent[]
   );
 }
 
+function pad(n: number) {
+  return String(n).padStart(2, "0");
+}
+function localDate(d: Date) {
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+function localTime(d: Date) {
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+function withOffset(date: string, time: string) {
+  const d = new Date(`${date}T${time}:00`);
+  const off = -d.getTimezoneOffset();
+  const sign = off >= 0 ? "+" : "-";
+  return `${date}T${time}:00${sign}${pad(Math.floor(Math.abs(off) / 60))}:${pad(Math.abs(off) % 60)}`;
+}
+
+function NewEventModal({ cals, onClose, onCreated }: { cals: CalsResp; onClose: () => void; onCreated: () => void }) {
+  const toast = useToast();
+  const writable = cals.calendars.filter((c) => !/reminders|напоминани/i.test(c.summary));
+  const preferred =
+    writable.find((c) => cals.selected[c.source].includes(c.id)) ?? writable.find((c) => c.primary) ?? writable[0];
+  const now = new Date();
+  now.setMinutes(now.getMinutes() < 30 ? 30 : 60, 0, 0);
+  const [calKey, setCalKey] = useState(preferred ? `${preferred.source}|${preferred.id}` : "");
+  const [title, setTitle] = useState("");
+  const [allDay, setAllDay] = useState(false);
+  const [date, setDate] = useState(localDate(now));
+  const [start, setStart] = useState(localTime(now));
+  const [end, setEnd] = useState(localTime(new Date(now.getTime() + 3600_000)));
+  const [location, setLocation] = useState("");
+  const [notes, setNotes] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    const [source, calendar_id] = calKey.split("|") as ["google" | "icloud", string];
+    if (!calendar_id || !title.trim()) return;
+    setBusy(true);
+    try {
+      await post("/api/calendar/events", {
+        source,
+        calendar_id,
+        title: title.trim(),
+        all_day: allDay,
+        start: allDay ? date : withOffset(date, start),
+        end: allDay ? null : withOffset(date, end),
+        location: location.trim() || null,
+        description: notes.trim() || null
+      });
+      toast("Событие добавлено");
+      onCreated();
+      onClose();
+    } catch (err) {
+      toast((err as Error).message, true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal title="Новое событие" onClose={onClose}>
+      <form className="stack" onSubmit={submit}>
+        <select className="input" value={calKey} onChange={(e) => setCalKey(e.target.value)}>
+          {writable.map((c) => (
+            <option key={`${c.source}|${c.id}`} value={`${c.source}|${c.id}`}>
+              {SOURCE_LABEL[c.source]} · {c.summary}
+            </option>
+          ))}
+        </select>
+        <input className="input" placeholder="Название" value={title} onChange={(e) => setTitle(e.target.value)} autoFocus required />
+        <label className="row">
+          <input type="checkbox" checked={allDay} onChange={(e) => setAllDay(e.target.checked)} /> Весь день
+        </label>
+        <div className="row">
+          <input className="input" type="date" value={date} onChange={(e) => setDate(e.target.value)} required />
+          {!allDay && (
+            <>
+              <input className="input" type="time" value={start} onChange={(e) => setStart(e.target.value)} required />
+              <input className="input" type="time" value={end} onChange={(e) => setEnd(e.target.value)} required />
+            </>
+          )}
+        </div>
+        <input className="input" placeholder="Место (необязательно)" value={location} onChange={(e) => setLocation(e.target.value)} />
+        <textarea className="input" placeholder="Заметки" rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} />
+        <button className="btn primary" type="submit" disabled={busy || !calKey}>
+          {busy ? "Сохраняю…" : "Добавить"}
+        </button>
+      </form>
+    </Modal>
+  );
+}
+
 export default function Calendar() {
   const [days, setDays] = useState(7);
   const status = useFetch<Status>("/api/status");
   const { data, error, loading, reload } = useFetch<EventsResp>(`/api/calendar/events?days=${days}`, [days]);
   const [cals, setCals] = useState<CalsResp | null>(null);
   const [showCals, setShowCals] = useState(false);
+  const [showNew, setShowNew] = useState(false);
   const [params] = useSearchParams();
   const toast = useToast();
 
@@ -82,6 +176,15 @@ export default function Calendar() {
     try {
       setCals(await get<CalsResp>("/api/calendar/calendars"));
       setShowCals(true);
+    } catch (e) {
+      toast((e as Error).message, true);
+    }
+  }
+
+  async function openNew() {
+    try {
+      setCals(await get<CalsResp>("/api/calendar/calendars"));
+      setShowNew(true);
     } catch (e) {
       toast((e as Error).message, true);
     }
@@ -108,9 +211,14 @@ export default function Calendar() {
       <div className="page-head">
         <h1>Календарь</h1>
         {data?.connected && (
-          <button className="btn small" onClick={openCals}>
-            Календари
-          </button>
+          <div className="row">
+            <button className="btn small" onClick={openCals}>
+              Календари
+            </button>
+            <button className="btn primary small" onClick={openNew}>
+              + Событие
+            </button>
+          </div>
         )}
       </div>
       {data && !data.connected && (
@@ -161,6 +269,7 @@ export default function Calendar() {
           </div>
         </>
       )}
+      {showNew && cals && <NewEventModal cals={cals} onClose={() => setShowNew(false)} onCreated={() => void reload()} />}
       {showCals && cals && (
         <div className="modal-backdrop" onClick={() => setShowCals(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>

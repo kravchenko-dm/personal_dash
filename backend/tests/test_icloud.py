@@ -98,3 +98,52 @@ async def test_calendars_endpoint_merges_sources(client, auth, monkeypatch):
 async def test_events_not_connected(client, auth):
     body = (await client.get("/api/calendar/events", headers=auth)).json()
     assert body == {"connected": False, "events": [], "errors": []}
+
+
+class WritableCalendar(FakeCalendar):
+    saved: list[dict] = []
+
+    def save_event(self, **data):
+        WritableCalendar.saved.append(data)
+
+
+class WritablePrincipal:
+    def calendars(self):
+        return [WritableCalendar()]
+
+
+class WritableClient(FakeClient):
+    def principal(self):
+        return WritablePrincipal()
+
+
+async def test_create_icloud_event_endpoint(client, auth, monkeypatch):
+    monkeypatch.setattr(icloud, "_client", lambda: WritableClient())
+    monkeypatch.setattr(icloud, "enabled", lambda: True)
+    WritableCalendar.saved.clear()
+    body = {
+        "source": "icloud",
+        "calendar_id": FakeCalendar.url,
+        "title": "Врач",
+        "start": "2026-11-10T09:00:00+03:00",
+        "location": "Клиника",
+    }
+    r = await client.post("/api/calendar/events", json=body, headers=auth)
+    assert r.status_code == 201, r.text
+    ev = r.json()
+    assert ev["source"] == "icloud" and ev["calendar"] == "Семья" and ev["all_day"] is False
+    assert ev["end"] == "2026-11-10T10:00:00+03:00"  # default: one hour
+    saved = WritableCalendar.saved[-1]
+    assert saved["summary"] == "Врач" and saved["location"] == "Клиника" and saved["uid"].startswith("dash-")
+    # all-day event: dates only, ends the next day
+    r = await client.post(
+        "/api/calendar/events",
+        json={"source": "icloud", "calendar_id": FakeCalendar.url, "title": "ДР", "start": "2026-11-12", "all_day": True},
+        headers=auth,
+    )
+    assert r.status_code == 201 and r.json()["all_day"] is True and r.json()["end"] == "2026-11-13"
+    # unknown calendar and naive time are rejected
+    r = await client.post("/api/calendar/events", json={**body, "calendar_id": "https://nope/"}, headers=auth)
+    assert r.status_code == 400
+    r = await client.post("/api/calendar/events", json={**body, "start": "2026-11-10T09:00:00"}, headers=auth)
+    assert r.status_code == 400
