@@ -218,3 +218,30 @@ async def test_cheatbot_provider(monkeypatch):
     assert result.value == 250.75 and result.currency == "RUB" and result.extra["active_tasks"] == 2
     with pytest.raises(ValueError, match="invalid credentials"):
         await CheatBotProvider().fetch({"api_key": "nope"})
+
+
+async def test_polza_provider(monkeypatch):
+    from app.integrations.providers.polza import PolzaProvider
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET" and request.url == "https://polza.ai/api/v2/balance"
+        if request.headers["Authorization"] != "Bearer pk":
+            return httpx.Response(401, json={"error": {"code": "unauthorized", "message": "Invalid API key"}, "trace_id": "t"})
+        return httpx.Response(
+            200,
+            json={
+                "amount": "1234.56000000",
+                "available": "1200.06000000",
+                "reservedAmount": "12.50000000",
+                "spentAmount": "845.30000000",
+                "updatedAt": "2026-04-30T12:00:00.000Z",
+            },
+        )
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    result = await PolzaProvider().fetch({"api_key": "pk"})
+    assert result.value == 1234.56 and result.currency == "RUB"
+    assert result.extra["available"] == 1200.06 and result.extra["spent_total"] == 845.3
+    with pytest.raises(ValueError, match="Invalid API key"):
+        await PolzaProvider().fetch({"api_key": "bad"})
