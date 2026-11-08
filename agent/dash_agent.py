@@ -38,9 +38,9 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
-AGENT_VERSION = "0.4.5"
+AGENT_VERSION = "0.4.6"
 CONFIG_PATH = os.environ.get("DASH_AGENT_CONFIG", "/etc/dash-agent/config.json")
 LOG_TAIL_MAX = 500
 BIN_DIR = "/opt/dash-agent/bin"
@@ -661,42 +661,70 @@ def _arch() -> str:
     return {"x86_64": "amd64", "aarch64": "arm64", "armv7l": "arm"}.get(m, m)
 
 
-def ensure_restic() -> str:
-    """Return path to a restic binary, downloading the latest release when none is present."""
-    path = os.path.join(BIN_DIR, "restic")
-    if os.path.isfile(path):
-        return path
-    system = shutil.which("restic")
-    if system:
-        return system
-    os.makedirs(BIN_DIR, exist_ok=True)
+# dashboard url/token for the tool mirror; filled by load_config()
+_MIRROR: Dict[str, str] = {}
+
+
+def _fetch_tool(name: str, direct: Callable[[], bytes]) -> bytes:
+    """Download a tool binary from its vendor; if that fails (GitHub blocked, proxy 504...),
+    ask the dashboard, which mirrors the release at /api/agent/tools/<name>."""
+    try:
+        return direct()
+    except Exception as exc:  # noqa: BLE001
+        log("%s: direct download failed (%s), trying the dashboard mirror" % (name, exc))
+        if not _MIRROR.get("url"):
+            raise
+    url = "%s/api/agent/tools/%s?arch=%s" % (_MIRROR["url"].rstrip("/"), name, _arch())
+    req = urllib.request.Request(
+        url, headers={"X-Agent-Token": _MIRROR.get("token", ""), "User-Agent": "dash-agent/%s" % AGENT_VERSION}
+    )
+    with urllib.request.urlopen(req, timeout=600) as resp:
+        data = resp.read()
+    if len(data) < 1_000_000:
+        raise RuntimeError("%s: mirror returned %d bytes, not a binary" % (name, len(data)))
+    return data
+
+
+def _restic_direct() -> bytes:
     meta = json.loads(_download("https://api.github.com/repos/restic/restic/releases/latest").decode())
     want = "_linux_%s.bz2" % _arch()
     asset = next((a for a in meta.get("assets", []) if a["name"].endswith(want)), None)
     if not asset:
         raise RuntimeError("no restic build for %s" % _arch())
-    data = bz2.decompress(_download(asset["browser_download_url"], timeout=300))
-    with open(path, "wb") as f:
-        f.write(data)
-    os.chmod(path, 0o755)
-    return path
+    return bz2.decompress(_download(asset["browser_download_url"], timeout=300))
 
 
-def ensure_rclone() -> str:
-    path = os.path.join(BIN_DIR, "rclone")
-    if os.path.isfile(path):
-        return path
-    system = shutil.which("rclone")
-    if system:
-        return system
-    os.makedirs(BIN_DIR, exist_ok=True)
+def _rclone_direct() -> bytes:
     data = _download("https://downloads.rclone.org/rclone-current-linux-%s.zip" % _arch(), timeout=300)
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
         member = next(n for n in zf.namelist() if n.endswith("/rclone"))
-        with open(path, "wb") as f:
-            f.write(zf.read(member))
-    os.chmod(path, 0o755)
+        return zf.read(member)
+
+
+def _ensure_tool(name: str, direct: Callable[[], bytes]) -> str:
+    path = os.path.join(BIN_DIR, name)
+    if os.path.isfile(path):
+        return path
+    system = shutil.which(name)
+    if system:
+        return system
+    os.makedirs(BIN_DIR, exist_ok=True)
+    data = _fetch_tool(name, direct)
+    tmp = path + ".part"
+    with open(tmp, "wb") as f:
+        f.write(data)
+    os.chmod(tmp, 0o755)
+    os.replace(tmp, path)
     return path
+
+
+def ensure_restic() -> str:
+    """Return path to a restic binary, downloading the latest release when none is present."""
+    return _ensure_tool("restic", _restic_direct)
+
+
+def ensure_rclone() -> str:
+    return _ensure_tool("rclone", _rclone_direct)
 
 
 def _write_rclone_conf(text: Optional[str]) -> None:
@@ -1016,6 +1044,7 @@ def load_config() -> Dict[str, Any]:
     cfg.setdefault("token", os.environ.get("DASH_AGENT_TOKEN", ""))
     if not cfg["url"] or not cfg["token"]:
         raise SystemExit("config needs url and token")
+    _MIRROR.update(url=cfg["url"], token=cfg["token"])
     return cfg
 
 

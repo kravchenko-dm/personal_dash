@@ -5,13 +5,13 @@ from functools import lru_cache
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.db import get_db
 from app.models import AgentCommand, Server
-from app.services import monitoring
+from app.services import monitoring, tool_mirror
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 _HERE = Path(__file__).resolve()
@@ -81,3 +81,21 @@ async def install(token: str = Query(min_length=10), db: AsyncSession = Depends(
     await _server(db, token)  # only a valid token gets an installer
     tmpl = (AGENT_DIR / "install.sh.tmpl").read_text()
     return tmpl.replace("{{URL}}", get_settings().public_url).replace("{{TOKEN}}", token)
+
+
+@router.get("/tools/{name}")
+async def tool(
+    name: str,
+    arch: str = Query(default="amd64", pattern="^[a-z0-9]+$"),
+    x_agent_token: str | None = Header(default=None),
+    db: AsyncSession = Depends(get_db),
+):
+    """restic / rclone binary for agents whose server cannot reach GitHub directly."""
+    await _server(db, x_agent_token)
+    try:
+        path = await tool_mirror.ensure_tool(name, arch)
+    except KeyError:
+        raise HTTPException(404, "unknown tool or arch") from None
+    except Exception as exc:
+        raise HTTPException(502, f"не удалось скачать {name}: {exc}") from exc
+    return FileResponse(path, media_type="application/octet-stream", filename=name)

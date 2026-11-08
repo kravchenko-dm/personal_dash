@@ -1,5 +1,7 @@
 import importlib.util
 import json
+import os
+import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -396,26 +398,49 @@ def test_agent_config_command(tmp_path, monkeypatch):
     cfg_path.write_text('{"url": "https://d", "token": "dash_secret_value", "services": []}')
     monkeypatch.setattr(agent, "CONFIG_PATH", str(cfg_path))
     monkeypatch.setattr(agent, "CRON_BACKUP_DIR", str(tmp_path / "bak"))
-    monkeypatch.setattr(agent, "collect_services", lambda cfg: [{"name": s["name"], "status": "running", "detail": ""} for s in cfg["services"]])
+    monkeypatch.setattr(
+        agent,
+        "collect_services",
+        lambda cfg: [{"name": s["name"], "status": "running", "detail": ""} for s in cfg["services"]],
+    )
     cfg = json.loads(cfg_path.read_text())
     shown = agent.cmd_config(cfg, {"action": "get"})
     assert shown["ok"] and "dash_secret_value" not in shown["output"]
     assert agent.cmd_config(cfg, {"action": "set", "set": {"token": "x"}})["ok"] is False
-    assert agent.cmd_config(cfg, {"action": "set", "set": {"services": [{"name": "a", "kind": "weird"}]}})["ok"] is False
-    res = agent.cmd_config(cfg, {"action": "set", "set": {"services": [{"name": "api", "kind": "docker", "container": "api-1"}], "disks": ["/"]}})
+    assert (
+        agent.cmd_config(cfg, {"action": "set", "set": {"services": [{"name": "a", "kind": "weird"}]}})["ok"]
+        is False
+    )
+    res = agent.cmd_config(
+        cfg,
+        {
+            "action": "set",
+            "set": {"services": [{"name": "api", "kind": "docker", "container": "api-1"}], "disks": ["/"]},
+        },
+    )
     assert res["ok"], res
     new = json.loads(cfg_path.read_text())
-    assert new["token"] == "dash_secret_value" and new["services"][0]["container"] == "api-1" and new["disks"] == ["/"]
+    assert (
+        new["token"] == "dash_secret_value"
+        and new["services"][0]["container"] == "api-1"
+        and new["disks"] == ["/"]
+    )
     assert list((tmp_path / "bak").iterdir())  # previous copy kept
 
 
 def test_agent_clickhouse_dump_command():
     agent = load_agent()
-    argv, fname = agent._dump_command({"type": "clickhouse", "container": "ch", "database": "metrics", "table": "post_metrics"})
-    assert argv[:4] == ["docker", "exec", "-i", "ch"] and argv[-1].startswith("SELECT * FROM `metrics`.`post_metrics`")
+    argv, fname = agent._dump_command(
+        {"type": "clickhouse", "container": "ch", "database": "metrics", "table": "post_metrics"}
+    )
+    assert argv[:4] == ["docker", "exec", "-i", "ch"] and argv[-1].startswith(
+        "SELECT * FROM `metrics`.`post_metrics`"
+    )
     assert fname == "metrics.post_metrics.native"
     with pytest.raises(RuntimeError):
-        agent._dump_command({"type": "clickhouse", "container": "ch", "database": "metrics", "table": "x; drop"})
+        agent._dump_command(
+            {"type": "clickhouse", "container": "ch", "database": "metrics", "table": "x; drop"}
+        )
 
 
 def test_agent_empty_stream_is_not_a_failure(monkeypatch):
@@ -431,3 +456,59 @@ def test_agent_empty_stream_is_not_a_failure(monkeypatch):
     monkeypatch.setattr(agent.subprocess, "run", lambda *a, **k: FakeRestic())
     res = agent._backup_stream({"type": "clickhouse", "name": "ch"}, ["plan:1"], {}, 60)
     assert res["empty"] is True and res["snapshot_id"] is None
+
+
+async def test_tool_mirror_endpoint(client, auth, monkeypatch, tmp_path):
+    from app.services import tool_mirror
+
+    pid, server = await make_project_and_server(client, auth)
+    monkeypatch.setattr(tool_mirror, "CACHE_DIR", tmp_path)
+    calls = []
+
+    async def fake_fetch(arch):
+        calls.append(arch)
+        return b"ELF" + b"x" * 10
+
+    monkeypatch.setitem(tool_mirror.FETCHERS, "restic", fake_fetch)
+    hdr = {"X-Agent-Token": server["token"]}
+    assert (await client.get("/api/agent/tools/restic")).status_code == 401
+    assert (await client.get("/api/agent/tools/nano", headers=hdr)).status_code == 404
+    r = await client.get("/api/agent/tools/restic?arch=amd64", headers=hdr)
+    assert r.status_code == 200 and r.content.startswith(b"ELF")
+    r = await client.get("/api/agent/tools/restic?arch=amd64", headers=hdr)
+    assert r.status_code == 200 and calls == ["amd64"]  # served from cache the second time
+
+
+def test_agent_tool_download_falls_back_to_mirror(tmp_path, monkeypatch):
+    agent = load_agent()
+    monkeypatch.setattr(agent, "BIN_DIR", str(tmp_path / "bin"))
+    monkeypatch.setattr(agent.shutil, "which", lambda name: None)
+    agent._MIRROR.update(url="https://dash.example", token="dash_tok")
+
+    def direct_fails():
+        raise urllib.error.HTTPError("https://api.github.com", 504, "Gateway Time-out", {}, None)
+
+    seen = {}
+
+    class Resp:
+        def __init__(self, req):
+            seen["url"] = req.full_url
+            seen["token"] = req.get_header("X-agent-token")
+
+        def read(self):
+            return b"B" * 1_200_000
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(agent.urllib.request, "urlopen", lambda req, timeout=0: Resp(req))
+    path = agent._ensure_tool("restic", direct_fails)
+    assert path == str(tmp_path / "bin" / "restic") and os.path.getsize(path) == 1_200_000
+    assert (
+        seen["url"].startswith("https://dash.example/api/agent/tools/restic?arch=")
+        and seen["token"] == "dash_tok"
+    )
+    assert agent._ensure_tool("restic", direct_fails) == path  # cached, no download
