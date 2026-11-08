@@ -25,6 +25,16 @@ from app.routers import (
 from app.services import scheduler, telegram_bot
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+# chatty third-party loggers: one line per job run / HTTP request / Apple icalendar quirk
+for _name, _level in (
+    ("apscheduler", logging.WARNING),
+    ("httpx", logging.WARNING),
+    ("httpcore", logging.WARNING),
+    ("google_auth_httplib2", logging.WARNING),
+    ("googleapiclient", logging.WARNING),
+    ("caldav", logging.ERROR),  # rate-limited "icalendar data breaks the standard" diffs
+):
+    logging.getLogger(_name).setLevel(_level)
 log = logging.getLogger(__name__)
 
 
