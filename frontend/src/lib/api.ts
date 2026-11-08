@@ -123,6 +123,13 @@ export interface TelegramChat {
   project_id: number | null;
 }
 
+export interface CalendarAlerts {
+  remind_minutes: number;
+  watch_changes: boolean;
+  watch_days: number;
+  choices: number[];
+}
+
 export interface CalendarEvent {
   id: string;
   calendar_id: string;

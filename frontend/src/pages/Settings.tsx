@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { getToken, post, type Status } from "../lib/api";
+import { getToken, post, put, type CalendarAlerts, type Status } from "../lib/api";
 import { useFetch } from "../lib/useFetch";
 import { currentSubscription, isStandalone, pushSupported, subscribePush, unsubscribePush } from "../lib/push";
 import { useToast } from "../components/Toast";
@@ -11,6 +11,7 @@ function Chip({ on, label }: { on: boolean; label: string }) {
 
 export default function Settings({ onLogout }: { onLogout: () => void }) {
   const { data: status } = useFetch<Status>("/api/status");
+  const { data: alerts, setData: setAlerts } = useFetch<CalendarAlerts>("/api/calendar/alerts");
   const [subscribed, setSubscribed] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
   const toast = useToast();
@@ -48,6 +49,19 @@ export default function Settings({ onLogout }: { onLogout: () => void }) {
   }
 
   const iosHint = /iPhone|iPad/.test(navigator.userAgent) && !isStandalone();
+
+  async function saveAlerts(patch: Partial<CalendarAlerts>) {
+    if (!alerts) return;
+    const next = { ...alerts, ...patch };
+    setAlerts(next);
+    try {
+      setAlerts(await put<CalendarAlerts>("/api/calendar/alerts", next));
+      toast("Сохранено");
+    } catch (e) {
+      setAlerts(alerts);
+      toast((e as Error).message, true);
+    }
+  }
 
   return (
     <div className="page">
@@ -99,6 +113,54 @@ export default function Settings({ onLogout }: { onLogout: () => void }) {
           <p className="muted">…</p>
         )}
         <p className="small muted">Ключи задаются в .env на сервере, см. README.</p>
+      </div>
+
+      <div className="card stack">
+        <h3>Уведомления календаря</h3>
+        {!status?.google_connected && !status?.icloud && (
+          <p className="muted small">Подключите Google или iCloud в разделе «Календарь».</p>
+        )}
+        <label className="field">
+          <span>Напоминать перед событием</span>
+          <select
+            className="input"
+            value={alerts?.remind_minutes ?? 15}
+            disabled={!alerts}
+            onChange={(e) => saveAlerts({ remind_minutes: Number(e.target.value) })}
+          >
+            {(alerts?.choices ?? [0, 5, 10, 15, 30, 60, 120]).map((m) => (
+              <option key={m} value={m}>
+                {m === 0 ? "Не напоминать" : m < 60 ? `За ${m} мин` : `За ${m / 60} ч`}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="row" style={{ gap: 8, alignItems: "center" }}>
+          <input
+            type="checkbox"
+            checked={alerts?.watch_changes ?? true}
+            disabled={!alerts}
+            onChange={(e) => saveAlerts({ watch_changes: e.target.checked })}
+          />
+          <span>Сообщать о новых, перенесённых и отменённых событиях</span>
+        </label>
+        {alerts?.watch_changes && (
+          <label className="field">
+            <span>Следить за событиями на</span>
+            <select
+              className="input"
+              value={alerts.watch_days}
+              onChange={(e) => saveAlerts({ watch_days: Number(e.target.value) })}
+            >
+              {[1, 3, 7, 14, 30].map((d) => (
+                <option key={d} value={d}>
+                  {d === 1 ? "1 день" : d < 5 ? `${d} дня` : `${d} дней`}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        <p className="small muted">Проверка каждые 5 минут, уведомления приходят пушем и в Telegram.</p>
       </div>
 
       <div className="card stack">

@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth import require_auth
 from app.config import get_settings
 from app.db import get_db
-from app.services import agenda, icloud
+from app.services import agenda, calendar_alerts, icloud
 from app.services import calendar as svc
 
 router = APIRouter(prefix="/api/calendar", tags=["calendar"])
@@ -18,6 +18,12 @@ router = APIRouter(prefix="/api/calendar", tags=["calendar"])
 class SelectedIn(BaseModel):
     ids: list[str]
     source: str = "google"
+
+
+class AlertsIn(BaseModel):
+    remind_minutes: int = Field(ge=0, le=1440)
+    watch_changes: bool = True
+    watch_days: int = Field(default=7, ge=1, le=30)
 
 
 class EventIn(BaseModel):
@@ -41,7 +47,11 @@ class EventIn(BaseModel):
             start_dt = datetime.fromisoformat(self.start.replace("Z", "+00:00"))
             if start_dt.tzinfo is None:
                 raise ValueError("время без часового пояса")
-            end_dt = datetime.fromisoformat(self.end.replace("Z", "+00:00")) if self.end else start_dt + timedelta(hours=1)
+            end_dt = (
+                datetime.fromisoformat(self.end.replace("Z", "+00:00"))
+                if self.end
+                else start_dt + timedelta(hours=1)
+            )
             if end_dt <= start_dt:
                 end_dt = start_dt + timedelta(hours=1)
             return start_dt, end_dt
@@ -120,7 +130,25 @@ async def create_event(body: EventIn, db: AsyncSession = Depends(get_db)):
     start, end = body.bounds()
     try:
         if body.source == "icloud":
-            return await icloud.create_event(body.calendar_id, body.title, start, end, body.location, body.description)
-        return await svc.create_event(db, body.calendar_id, body.title, start, end, body.location, body.description)
+            return await icloud.create_event(
+                body.calendar_id, body.title, start, end, body.location, body.description
+            )
+        return await svc.create_event(
+            db, body.calendar_id, body.title, start, end, body.location, body.description
+        )
     except (RuntimeError, ValueError) as exc:
         raise HTTPException(400, str(exc)) from exc
+
+
+@router.get("/alerts", dependencies=[Depends(require_auth)])
+async def get_alerts(db: AsyncSession = Depends(get_db)):
+    return {**(await calendar_alerts.get_config(db)), "choices": list(calendar_alerts.REMIND_CHOICES)}
+
+
+@router.put("/alerts", dependencies=[Depends(require_auth)])
+async def set_alerts(body: AlertsIn, db: AsyncSession = Depends(get_db)):
+    try:
+        cfg = await calendar_alerts.set_config(db, body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {**cfg, "choices": list(calendar_alerts.REMIND_CHOICES)}

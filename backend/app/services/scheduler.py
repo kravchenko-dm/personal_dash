@@ -11,7 +11,17 @@ from sqlalchemy import select
 from app.config import get_settings
 from app.db import SessionLocal
 from app.models import Task
-from app.services import agenda, apple_reminders, backups, balances, monitoring, push, summaries, telegram_bot
+from app.services import (
+    agenda,
+    apple_reminders,
+    backups,
+    balances,
+    calendar_alerts,
+    monitoring,
+    push,
+    summaries,
+    telegram_bot,
+)
 from app.services.tasks import open_tasks_text
 
 log = logging.getLogger(__name__)
@@ -88,6 +98,16 @@ async def job_morning_brief() -> None:
         )
 
 
+async def job_calendar_alerts() -> None:
+    async with SessionLocal() as db:
+        try:
+            stats = await calendar_alerts.tick(db)
+            if any(stats[k] for k in ("reminded", "added", "changed", "removed")):
+                log.info("calendar alerts: %s", stats)
+        except Exception as exc:
+            log.warning("calendar alerts failed: %s", exc)
+
+
 async def job_http_checks() -> None:
     async with SessionLocal() as db:
         try:
@@ -123,10 +143,17 @@ def start() -> None:
         job_caldav_reminders, IntervalTrigger(hours=1), id="caldav_reminders", replace_existing=True
     )
     # monitoring + backups: HTTP checks honour each monitor's own interval, so a 1-minute tick is fine
+    scheduler.add_job(
+        job_calendar_alerts, IntervalTrigger(minutes=5), id="calendar_alerts", replace_existing=True
+    )
     scheduler.add_job(job_http_checks, IntervalTrigger(minutes=1), id="http_checks", replace_existing=True)
-    scheduler.add_job(job_silent_agents, IntervalTrigger(minutes=1), id="silent_agents", replace_existing=True)
+    scheduler.add_job(
+        job_silent_agents, IntervalTrigger(minutes=1), id="silent_agents", replace_existing=True
+    )
     scheduler.add_job(job_backups_tick, IntervalTrigger(minutes=1), id="backups_tick", replace_existing=True)
-    scheduler.add_job(job_cleanup_samples, CronTrigger(hour=3, minute=30), id="cleanup_samples", replace_existing=True)
+    scheduler.add_job(
+        job_cleanup_samples, CronTrigger(hour=3, minute=30), id="cleanup_samples", replace_existing=True
+    )
     scheduler.start()
     log.info("scheduler started (%s)", get_settings().tz)
 
