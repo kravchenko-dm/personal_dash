@@ -139,6 +139,7 @@ async def tick(db: AsyncSession, now: datetime | None = None) -> dict:
     state = await _get(db, STATE_KEY)
     events, errors = await agenda.events(db, days=cfg["watch_days"], start=now)
     by_id = {e["id"]: e for e in events if e.get("id")}
+    sources = await agenda.sources(db)
 
     # 1) reminders -------------------------------------------------------------------------
     reminded: dict[str, str] = dict(state.get("reminded") or {})
@@ -174,12 +175,15 @@ async def tick(db: AsyncSession, now: datetime | None = None) -> dict:
             horizon_iso = state.get("horizon") or horizon_iso
         elif snapshot or state.get("horizon"):
             prev_horizon = _as_dt(state["horizon"]) if state.get("horizon") else now
+            # a provider connected since the last pass: its events are a baseline, not news
+            known = set(state.get("sources") or {v.get("source") for v in snapshot.values()})
+            fresh_sources = set(sources) - known
             lines: list[str] = []
             for eid, e in by_id.items():
                 old = snapshot.get(eid)
                 if old is None:
                     # events that merely scrolled into the window are not "new"
-                    if _as_dt(e["start"]) > prev_horizon:
+                    if _as_dt(e["start"]) > prev_horizon or e.get("source") in fresh_sources:
                         continue
                     lines.append(f"➕ {e['title']}\n   {_describe(e)}")
                     await push.notify_all(
@@ -205,6 +209,8 @@ async def tick(db: AsyncSession, now: datetime | None = None) -> dict:
                     continue
                 if _as_dt(old["start"]) <= now:
                     continue  # it simply happened already
+                if old.get("source") and old["source"] not in sources:
+                    continue  # the provider was disconnected, nothing was cancelled
                 lines.append(f"❌ Отменено: {old['title']}\n   {_describe(old)}")
                 await push.notify_all(
                     db, f"Отменено: {old['title']}", _describe(old), url="/calendar", tag=f"cal-del-{eid}"
@@ -221,6 +227,7 @@ async def tick(db: AsyncSession, now: datetime | None = None) -> dict:
             "reminded": reminded,
             "snapshot": new_snapshot,
             "horizon": horizon_iso,
+            "sources": list(state.get("sources") or []) if stats["skipped"] else sources,
             "checked_at": now.isoformat(),
         },
     )

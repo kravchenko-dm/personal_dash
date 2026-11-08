@@ -1,5 +1,7 @@
+import logging
 from datetime import date, datetime, timedelta
 from typing import Literal
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
@@ -12,6 +14,7 @@ from app.db import get_db
 from app.services import agenda, calendar_alerts, icloud
 from app.services import calendar as svc
 
+log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/calendar", tags=["calendar"])
 
 
@@ -67,11 +70,23 @@ async def oauth_start():
 
 
 @router.get("/oauth/callback", include_in_schema=False)
-async def oauth_callback(code: str, state: str, db: AsyncSession = Depends(get_db)):
+async def oauth_callback(
+    code: str = "", state: str = "", error: str = "", db: AsyncSession = Depends(get_db)
+):
+    def fail(reason: str) -> RedirectResponse:
+        log.warning("google oauth callback failed: %s", reason)
+        return RedirectResponse("/calendar?error=" + quote(reason[:300]))
+
+    if error or not code:
+        # user pressed "cancel" on the consent screen, or Google reported a problem
+        return fail(f"Google не выдал код авторизации: {error or 'нет параметра code'}")
     try:
         await svc.finish_oauth(db, code, state)
     except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        return fail(str(exc))
+    except Exception as exc:  # oauthlib / google-auth errors: show the reason instead of a bare 500
+        log.exception("google oauth token exchange failed")
+        return fail(f"Не удалось обменять код Google на токен: {exc}")
     return RedirectResponse("/calendar?connected=1")
 
 

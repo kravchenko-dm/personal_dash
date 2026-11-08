@@ -40,6 +40,16 @@ async def connected(db: AsyncSession) -> bool:
     return icloud.enabled() or await google.is_connected(db)
 
 
+async def sources(db: AsyncSession) -> list[str]:
+    """Names of the providers that are currently connected."""
+    out: list[str] = []
+    if await google.is_connected(db):
+        out.append("google")
+    if icloud.enabled():
+        out.append("icloud")
+    return out
+
+
 async def upcoming_text(db: AsyncSession, days: int = 3) -> str:
     if not await connected(db):
         return ""

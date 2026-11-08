@@ -161,6 +161,8 @@ export default function Calendar() {
 
   useEffect(() => {
     if (params.get("connected")) toast("Google Calendar подключён");
+    const err = params.get("error");
+    if (err) toast(`Google Calendar: ${err}`, true);
   }, [params, toast]);
 
   async function connect() {

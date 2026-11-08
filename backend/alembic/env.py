@@ -12,8 +12,10 @@ from app.db import Base
 from app import models  # noqa: F401  (register tables)
 
 config = context.config
-if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+# The app runs migrations on startup and has its own logging; alembic.ini's fileConfig would
+# silence every existing logger (uvicorn, app.*), so it is applied only from the CLI.
+if config.config_file_name is not None and config.attributes.get("configure_logger", True):
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 

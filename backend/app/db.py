@@ -34,6 +34,7 @@ async def get_db() -> AsyncIterator[AsyncSession]:
 def alembic_config(url: str | None = None) -> Config:
     cfg = Config(str(ALEMBIC_INI))
     cfg.set_main_option("sqlalchemy.url", url or get_settings().database_url)
+    cfg.attributes["configure_logger"] = False  # keep the app's logging setup, see alembic/env.py
     return cfg
 
 

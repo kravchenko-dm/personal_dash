@@ -42,8 +42,12 @@ def fake(monkeypatch):
     async def send_to_owner(text, reply_markup=None):
         world["tg"].append(text)
 
+    async def sources(db):
+        return list(world.get("sources") or ["google"])
+
     monkeypatch.setattr(agenda, "events", events)
     monkeypatch.setattr(agenda, "connected", connected)
+    monkeypatch.setattr(agenda, "sources", sources)
     monkeypatch.setattr(push, "notify_all", notify_all)
     monkeypatch.setattr(telegram_bot, "send_to_owner", send_to_owner)
     return world
@@ -140,3 +144,28 @@ async def test_alerts_endpoint(client, auth):
     }
     r = await client.put("/api/calendar/alerts", json={"remind_minutes": 7}, headers=auth)
     assert r.status_code == 400
+
+
+async def test_new_provider_is_a_baseline_not_news(fake):
+    base = NOW + timedelta(days=1)
+    fake["events"] = [ev("g1", "Google", base)]
+    fake["sources"] = ["google"]
+    async with SessionLocal() as db:
+        await calendar_alerts.tick(db, now=NOW)
+        # iCloud connected: its events must not be announced as new
+        fake["sources"] = ["google", "icloud"]
+        fake["events"] = [
+            ev("g1", "Google", base),
+            {**ev("i1", "iCloud", base + timedelta(hours=2)), "source": "icloud"},
+        ]
+        stats = await calendar_alerts.tick(db, now=NOW + timedelta(minutes=5))
+        assert stats["added"] == 0 and not fake["tg"]
+        # ...but later additions from it are
+        fake["events"].append({**ev("i2", "Ещё iCloud", base + timedelta(hours=4)), "source": "icloud"})
+        stats = await calendar_alerts.tick(db, now=NOW + timedelta(minutes=10))
+        assert stats["added"] == 1
+        # disconnecting Google is not a mass cancellation
+        fake["sources"] = ["icloud"]
+        fake["events"] = [e for e in fake["events"] if e["source"] != "google"]
+        stats = await calendar_alerts.tick(db, now=NOW + timedelta(minutes=15))
+        assert stats["removed"] == 0

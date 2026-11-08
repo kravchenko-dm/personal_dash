@@ -52,8 +52,18 @@ def _check_state(state: str) -> bool:
         return False
 
 
+def _flow() -> Flow:
+    # google-auth-oauthlib >= 1.1 turns PKCE on by default and keeps the code_verifier on the Flow
+    # object. The callback is a separate request with a fresh Flow, so the verifier would be lost
+    # ("invalid_grant: Missing code verifier"). This is a confidential web client with a secret,
+    # so PKCE is not required.
+    return Flow.from_client_config(
+        _client_config(), scopes=SCOPES, redirect_uri=redirect_uri(), autogenerate_code_verifier=False
+    )
+
+
 def auth_url() -> str:
-    flow = Flow.from_client_config(_client_config(), scopes=SCOPES, redirect_uri=redirect_uri())
+    flow = _flow()
     url, _ = flow.authorization_url(
         access_type="offline", prompt="consent", include_granted_scopes="true", state=_state()
     )
@@ -63,7 +73,7 @@ def auth_url() -> str:
 async def finish_oauth(db: AsyncSession, code: str, state: str) -> None:
     if not _check_state(state):
         raise ValueError("Неверный state")
-    flow = Flow.from_client_config(_client_config(), scopes=SCOPES, redirect_uri=redirect_uri())
+    flow = _flow()
     await asyncio.to_thread(flow.fetch_token, code=code)
     creds = flow.credentials
     data = {
