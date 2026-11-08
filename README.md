@@ -11,7 +11,7 @@ push-уведомлениями, Telegram-ботом, саммари от Claude
 | Балансы | Источники: ручной, универсальный HTTP JSON (URL + заголовки + JSONPath), OpenRouter, DeepSeek, Polza.AI, хостинги VDSina (.ru/.com) и CLO (clo.ru), SMM-панели со стандартным API v2 (smmprime.com и подобные), SubGram, CheatBot. Обновление каждые 30 минут, история, пуш при падении ниже порога |
 | Push | Web Push (VAPID). На iOS работает после «На экран Домой» (iOS 16.4+) |
 | Telegram | Бот собирает сообщения из чатов, куда его добавили. Команды `/summary`, `/digest`, `/tasks`, `/add`, `/done`. Предложенные задачи добавляются одной кнопкой |
-| Саммари | Нейросеть делает выжимку по чатам + предлагает задачи. По умолчанию Claude, одной настройкой переключается на Kimi, DeepSeek, OpenRouter, OpenAI, Qwen или локальную Ollama. Вечерний дайджест в 21:00, утренний бриф в 08:00 |
+| Саммари | Нейросеть делает выжимку по чатам + предлагает задачи. По умолчанию Claude, одной настройкой переключается на Kimi, DeepSeek, OpenRouter, OpenAI, Polza.AI (оплата в рублях), Qwen или локальную Ollama. Вечерний дайджест в 21:00, утренний бриф в 08:00 |
 | Календарь | Google (OAuth) и iCloud через CalDAV, включая семейный календарь Apple. Выбор календарей, единая агенда на 1–30 дней, создание событий в любой из календарей (iCloud сразу, Google с правом `calendar.events`) |
 | YouGile | Доска (kanban), список, дедлайны, по людям. Отметка «готово», создание задач |
 | Проекты | Карточка на каждый сервис: стадия, ссылки, строка «что происходит сейчас». Доска фич (идеи → запланировано → в работе → тестирование → выпущено), заметки в markdown, привязка Telegram-чатов. Саммари по чатам проекта получает описание и доску и предлагает фичи, которые добавляются на доску одной кнопкой в Telegram или в UI |
@@ -331,7 +331,7 @@ CalDAV и доступны только приложениям на устрой
 Саммари и предложения задач не привязаны к одному вендору. В `.env`:
 
 ```
-LLM_PROVIDER=kimi          # anthropic | kimi | deepseek | openrouter | openai | qwen | ollama | custom
+LLM_PROVIDER=kimi          # anthropic | kimi | deepseek | openrouter | openai | polza | qwen | ollama | custom
 LLM_API_KEY=sk-...         # ключ выбранного провайдера
 LLM_MODEL=                 # пусто = модель по умолчанию (для kimi это kimi-k2-0905-preview)
 LLM_BASE_URL=              # пусто = адрес по умолчанию; для ollama/custom укажите свой
@@ -344,6 +344,7 @@ LLM_BASE_URL=              # пусто = адрес по умолчанию; д
 | deepseek | https://api.deepseek.com/v1 | deepseek-chat |
 | openrouter | https://openrouter.ai/api/v1 | moonshotai/kimi-k2 |
 | openai | https://api.openai.com/v1 | gpt-5 |
+| polza | https://polza.ai/api/v1 | anthropic/claude-sonnet-5.5 |
 | qwen | https://dashscope.aliyuncs.com/compatible-mode/v1 | qwen-plus |
 | ollama | http://ollama:11434/v1 | qwen2.5:14b (ключ не нужен) |
 | custom | `LLM_BASE_URL` | `LLM_MODEL` |
@@ -352,6 +353,15 @@ LLM_BASE_URL=              # пусто = адрес по умолчанию; д
 Все провайдеры кроме Anthropic работают через OpenAI-совместимый Chat Completions API: схема ответа
 вкладывается в промпт, включается JSON-режим (с автоматическим откатом, если провайдер его не
 поддерживает), ответ валидируется по схеме. Через OpenRouter доступны сотни моделей по одному ключу.
+
+Polza.AI — российский агрегатор с оплатой в рублях и тем же OpenAI-совместимым API, один ключ и на
+саммари, и на источник баланса. Имена моделей в формате `вендор/модель`: `anthropic/claude-sonnet-5.5`,
+`anthropic/claude-opus-5.5`, `deepseek/deepseek-v4.1-flash`, `moonshotai/kimi-k3`, `qwen/qwen3.8-max`,
+`google/gemini-3.8-flash`, `yandex/yandexgpt-5.1-pro`, `sber/gigachat-2-max`. Полный список:
+`curl https://polza.ai/api/v1/models?type=chat` или https://polza.ai/models. Параметры запроса можно
+дописать прямо в `LLM_MODEL` через `@`: `anthropic/claude-sonnet-5.5@reasoning_effort=low`,
+`deepseek/deepseek-v4.1-flash@provider=DeepSeek&allow_fallbacks=false`. Для Polza схема ответа
+передаётся как `response_format: json_schema`, а не только в промпте.
 
 Код: `backend/app/services/llm/`. Новый вендор с другим протоколом — класс с методом
 `complete_json(system, user, schema)` и ветка в `get_llm()`.

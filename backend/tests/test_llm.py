@@ -93,3 +93,33 @@ async def test_summarize_validates_schema(monkeypatch):
     result = await summarizer.summarize("msgs", "tasks")
     assert result.as_markdown() == "s\n\n• h"
     assert result.tasks_as_dicts()[0]["priority"] == 1
+
+
+async def test_polza_uses_json_schema_then_degrades(monkeypatch):
+    import json
+
+    calls: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        calls.append(body)
+        assert request.url == "https://polza.ai/api/v1/chat/completions"
+        assert request.headers["Authorization"] == "Bearer pk" and request.headers["X-Title"] == "Personal Dash"
+        fmt = body.get("response_format", {}).get("type")
+        if fmt == "json_schema":
+            assert body["response_format"]["json_schema"]["schema"] == summarizer.OUTPUT_SCHEMA
+            return httpx.Response(400, json={"error": {"code": "BAD_REQUEST", "message": "response_format json_schema unsupported by provider"}})
+        assert fmt == "json_object"
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"summary": "ok", "highlights": [], "proposed_tasks": []}'}}]})
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+
+    s = Settings(llm_provider="polza", llm_api_key="pk")
+    assert describe(s) == {"provider": "polza", "model": "anthropic/claude-sonnet-5.5", "enabled": True}
+    client = get_llm(s)
+    assert isinstance(client, OpenAICompatClient) and client.json_schema is True
+    data = await client.complete_json("sys", "user", summarizer.OUTPUT_SCHEMA)
+    assert data["summary"] == "ok"
+    assert [c["response_format"]["type"] for c in calls] == ["json_schema", "json_object"]
+    assert calls[0]["model"] == "anthropic/claude-sonnet-5.5"

@@ -2,7 +2,7 @@
 
 Pick one with LLM_PROVIDER in .env:
   anthropic  -> Claude via the official SDK (default)
-  kimi, deepseek, openrouter, openai, ollama, qwen, custom -> any OpenAI-compatible chat API
+  kimi, deepseek, openrouter, openai, polza, ollama, qwen, custom -> any OpenAI-compatible chat API
 
 Each backend implements `complete_json(system, user, schema) -> dict`.
 """

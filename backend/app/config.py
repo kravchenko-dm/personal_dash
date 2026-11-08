@@ -28,7 +28,7 @@ class Settings(BaseSettings):
 
     # LLM for summaries. anthropic (default) or any OpenAI-compatible provider, see services/llm.
     llm_provider: str = (
-        "anthropic"  # anthropic | kimi | deepseek | openrouter | openai | qwen | ollama | custom
+        "anthropic"  # anthropic | kimi | deepseek | openrouter | openai | polza | qwen | ollama | custom
     )
     llm_api_key: str = ""
     llm_base_url: str = ""
