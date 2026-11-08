@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Personal Dash — Политика конфиденциальности</title>
+  <style>
+    body { font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 16px; color: #1c1c1e; background: #fff; }
+    h1 { font-size: 1.6em; } h2 { font-size: 1.15em; margin-top: 1.6em; }
+    @media (prefers-color-scheme: dark) { body { color: #e5e5ea; background: #111; } a { color: #8ab4f8; } }
+  </style>
+</head>
+<body>
+  <h1>Personal Dash — Политика конфиденциальности</h1>
+  <p>Обновлено: 8 ноября 2026 г.</p>
+
+  <p>Personal Dash — это личный дашборд для одного пользователя (владельца), развёрнутый на его собственном сервере.
+  Приложение не является публичным сервисом, не имеет регистрации и не обслуживает третьих лиц.</p>
+
+  <h2>Какие данные Google используются</h2>
+  <p>При подключении Google Calendar приложение запрашивает права <code>calendar.readonly</code> (чтение списка
+  календарей и событий) и <code>calendar.events</code> (создание событий). Данные используются только для того,
+  чтобы показать владельцу его агенду на дашборде, в утреннем брифе и в Telegram-боте, а также создать событие
+  по его команде.</p>
+
+  <h2>Хранение</h2>
+  <p>OAuth-токены хранятся в базе данных на сервере владельца и используются только для обращения к Google Calendar
+  API от его имени. События кэшируются в памяти на время запроса и не сохраняются постоянно.</p>
+
+  <h2>Передача третьим лицам</h2>
+  <p>Данные Google Calendar не продаются, не передаются рекламным сетям и не используются для обучения моделей.
+  Фрагменты расписания могут включаться в текст, который приложение отправляет выбранной владельцем нейросети
+  для составления утреннего брифа, и в сообщения Telegram-бота самому владельцу.</p>
+
+  <p>Использование информации, полученной через Google API, соответствует
+  <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>,
+  включая требования Limited Use.</p>
+
+  <h2>Отзыв доступа</h2>
+  <p>Доступ можно отозвать в любой момент кнопкой «Отключить» в настройках дашборда или на странице
+  <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a>. После этого токены
+  удаляются из базы приложения.</p>
+
+  <h2>Контакт</h2>
+  <p>Вопросы по этой политике: dima.kak2c@gmail.com</p>
+</body>
+</html>
