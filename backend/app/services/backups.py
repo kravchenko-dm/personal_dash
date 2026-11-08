@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from apscheduler.triggers.cron import CronTrigger
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -153,12 +153,35 @@ async def queue_run(
     return run
 
 
+CHECK_EVERY = timedelta(days=7)
+
+
+async def _check_due(db: AsyncSession, plan: BackupPlan, now: datetime) -> bool:
+    """A weekly `restic check` for plans that have at least one successful backup and are idle."""
+    if plan.last_status != "ok" or plan.last_ok_at is None:
+        return False
+    running = await db.scalar(
+        select(func.count())
+        .select_from(BackupRun)
+        .where(BackupRun.plan_id == plan.id, BackupRun.status == "running")
+    )
+    if running:
+        return False
+    last = await db.scalar(
+        select(func.max(BackupRun.started_at)).where(BackupRun.plan_id == plan.id, BackupRun.kind == "check")
+    )
+    return last is None or now - aware(last) >= CHECK_EVERY
+
+
 async def tick(db: AsyncSession) -> None:
-    """Every minute: start due plans, flag overdue ones, time out stuck runs."""
+    """Every minute: start due plans, flag overdue ones, run the weekly check, time out stuck runs."""
     now = datetime.now(timezone.utc)
     dest = await get_destination(db)
     plans = list((await db.scalars(select(BackupPlan).where(BackupPlan.enabled.is_(True)))).all())
     for plan in plans:
+        if destination_ready(dest) and await _check_due(db, plan, now):
+            await queue_run(db, plan, "check", trigger="schedule")
+            continue  # one job per plan per tick; the backup itself gets the next minute
         nxt = aware(plan.next_run_at)
         if nxt is None:
             plan.next_run_at = compute_next_run(plan.schedule, now)
@@ -249,6 +272,8 @@ async def handle_command_result(db: AsyncSession, cmd: AgentCommand, result: dic
             await alerts.resolve_incident(
                 db, plan.project_id, "backup_overdue", str(plan.id), f"бэкап «{plan.name}» выполнен"
             )
+            # the UI shows plan.snapshots; refresh it without waiting for a manual request
+            await queue_run(db, plan, "snapshots", trigger="auto")
         else:
             errors = "; ".join(result.get("errors") or [])[:200] or run.output[-200:]
             await alerts.open_incident(

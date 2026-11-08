@@ -161,8 +161,18 @@ async def test_run_queues_command_with_secrets_only_on_the_wire(client, auth):
     plans = (await client.get(f"/api/projects/{pid}/backups", headers=auth)).json()
     assert plans[0]["last_status"] == "ok" and plans[0]["last_ok_at"] and plans[0]["repo_size"] == 123456
     runs = (await client.get(f"/api/projects/{pid}/backups/{plan['id']}/runs", headers=auth)).json()
-    assert runs[0]["status"] == "ok" and runs[0]["added_bytes"] == 1500 and runs[0]["duration_s"] == 12
+    backup_runs = [r for r in runs if r["kind"] == "backup"]
+    assert backup_runs[0]["status"] == "ok" and backup_runs[0]["added_bytes"] == 1500
+    assert backup_runs[0]["duration_s"] == 12
     assert (await client.get("/api/incidents", headers=auth)).json() == []
+    # a successful backup queues an automatic snapshots refresh; let the agent finish it
+    handed = (await client.post("/api/agent/report", json=fake_report(), headers=hdr)).json()["commands"]
+    assert handed[0]["kind"] == "backup_snapshots"
+    await client.post(
+        f"/api/agent/commands/{handed[0]['id']}/result",
+        json={"ok": True, "output": "", "snapshots": []},
+        headers=hdr,
+    )
 
     # failure opens an incident, next success resolves it
     run2 = (await client.post(f"/api/projects/{pid}/backups/{plan['id']}/run", headers=auth)).json()
@@ -267,3 +277,70 @@ def test_compute_next_run_and_validate():
     assert backups.validate_schedule("0 3 * * *") and not backups.validate_schedule("x y")
     nxt = backups.compute_next_run("0 3 * * *")
     assert nxt is not None and nxt > datetime.now(timezone.utc)
+
+
+async def test_backup_success_refreshes_snapshots(client, auth):
+    pid, server, plan = await _setup(client, auth)
+    hdr = {"X-Agent-Token": server["token"]}
+    await client.post(f"/api/projects/{pid}/backups/{plan['id']}/run", headers=auth)
+    handed = (await client.post("/api/agent/report", json=fake_report(), headers=hdr)).json()["commands"]
+    await client.post(
+        f"/api/agent/commands/{handed[0]['id']}/result",
+        json={
+            "ok": True,
+            "output": "ok",
+            "results": [{"item": "db", "snapshot_id": "a", "added": 1}],
+            "duration": 1,
+        },
+        headers=hdr,
+    )
+    # a snapshots listing was queued automatically...
+    cmds = (await client.get(f"/api/projects/{pid}/servers/{server['id']}/commands", headers=auth)).json()
+    assert [c["kind"] for c in cmds[:2]] == ["backup_snapshots", "backup"]
+    runs = (await client.get(f"/api/projects/{pid}/backups/{plan['id']}/runs", headers=auth)).json()
+    assert runs[0]["kind"] == "snapshots" and runs[0]["trigger"] == "auto" and runs[0]["status"] == "running"
+    # ...and its result lands in plan.snapshots
+    handed = (await client.post("/api/agent/report", json=fake_report(), headers=hdr)).json()["commands"]
+    snaps = [{"short_id": "a1", "time": "2026-11-08T01:00:00Z", "paths": ["/db.sql"], "tags": ["item:db"]}]
+    await client.post(
+        f"/api/agent/commands/{handed[0]['id']}/result",
+        json={"ok": True, "output": "", "snapshots": snaps, "duration": 1},
+        headers=hdr,
+    )
+    async with SessionLocal() as db:
+        assert (await db.get(BackupPlan, plan["id"])).snapshots == snaps
+
+
+async def test_weekly_check_is_scheduled(client, auth):
+    pid, server, plan = await _setup(client, auth)
+    now = datetime.now(timezone.utc)
+    async with SessionLocal() as db:
+        row = await db.get(BackupPlan, plan["id"])
+        row.last_status, row.last_ok_at = "ok", now
+        row.next_run_at = now + timedelta(hours=5)
+        await db.commit()
+        await backups.tick(db)  # never checked -> check now
+        await backups.tick(db)  # already running -> nothing new
+    runs = (await client.get(f"/api/projects/{pid}/backups/{plan['id']}/runs", headers=auth)).json()
+    assert [r["kind"] for r in runs] == ["check"] and runs[0]["trigger"] == "schedule"
+
+    hdr = {"X-Agent-Token": server["token"]}
+    handed = (await client.post("/api/agent/report", json=fake_report(), headers=hdr)).json()["commands"]
+    assert handed[0]["kind"] == "backup_check"
+    await client.post(
+        f"/api/agent/commands/{handed[0]['id']}/result",
+        json={"ok": True, "output": "no errors", "duration": 3},
+        headers=hdr,
+    )
+    async with SessionLocal() as db:
+        await backups.tick(db)  # checked minutes ago -> not again
+        from sqlalchemy import select
+
+        from app.models import BackupRun
+
+        assert len((await db.scalars(select(BackupRun))).all()) == 1
+        run = (await db.scalars(select(BackupRun))).first()
+        run.started_at = now - timedelta(days=8)
+        await db.commit()
+        await backups.tick(db)  # a week passed -> again
+        assert len((await db.scalars(select(BackupRun))).all()) == 2
