@@ -130,6 +130,14 @@ export interface CalendarAlerts {
   choices: number[];
 }
 
+export interface YouGileAlerts {
+  scope: "all" | "mine";
+  remind_minutes: number;
+  watch_changes: boolean;
+  brief: boolean;
+  choices: number[];
+}
+
 export interface CalendarEvent {
   id: string;
   calendar_id: string;

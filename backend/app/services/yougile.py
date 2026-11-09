@@ -58,6 +58,18 @@ def invalidate() -> None:
     _cache.clear()
 
 
+async def me() -> dict:
+    """The API-key owner."""
+
+    async def _load():
+        async with httpx.AsyncClient(base_url=BASE, headers=_headers(), timeout=30) as client:
+            resp = await client.get("/users/me")
+            resp.raise_for_status()
+            return resp.json()
+
+    return await _cached("me", _load)
+
+
 async def users() -> list[dict]:
     return await _cached("users", lambda: _get_all("/users"))
 
@@ -142,6 +154,15 @@ async def overview() -> dict:
         "tasks": out_tasks,
         "users": [{"id": u["id"], "name": user_map[u["id"]]} for u in usr],
     }
+
+
+async def task_log(task_id: str, limit: int = 20) -> list[dict]:
+    """Newest-first history of a task: entries like {type: done|executor|move|add, userId, timestamp}."""
+    async with httpx.AsyncClient(base_url=BASE, headers=_headers(), timeout=30) as client:
+        resp = await client.get(f"/tasks/{task_id}/log", params={"limit": limit})
+        resp.raise_for_status()
+        data = resp.json()
+    return data.get("content", []) if isinstance(data, dict) else data
 
 
 async def update_task(task_id: str, patch: dict) -> dict:

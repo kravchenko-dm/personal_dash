@@ -21,6 +21,7 @@ from app.services import (
     push,
     summaries,
     telegram_bot,
+    yougile_alerts,
 )
 from app.services.tasks import open_tasks_text
 
@@ -92,6 +93,13 @@ async def job_morning_brief() -> None:
             text += f"\n\nНапоминания Apple:\n{reminders}"
         if cal:
             text += f"\n\nСегодня в календаре:\n{cal}"
+        try:
+            ygl = await yougile_alerts.brief_text(db)
+        except Exception as exc:
+            ygl = ""
+            log.info("morning brief: yougile skipped: %s", exc)
+        if ygl:
+            text += f"\n\nYouGile:\n{ygl}"
         await telegram_bot.send_to_owner(text)
         await push.notify_all(
             db, "Утренний бриф", tasks.splitlines()[0] if tasks else "", url="/", tag="morning"
@@ -106,6 +114,16 @@ async def job_calendar_alerts() -> None:
                 log.info("calendar alerts: %s", stats)
         except Exception as exc:
             log.warning("calendar alerts failed: %s", exc)
+
+
+async def job_yougile_alerts() -> None:
+    async with SessionLocal() as db:
+        try:
+            stats = await yougile_alerts.tick(db)
+            if any(stats.values()):
+                log.info("yougile alerts: %s", stats)
+        except Exception as exc:
+            log.warning("yougile alerts failed: %s", exc)
 
 
 async def job_http_checks() -> None:
@@ -145,6 +163,9 @@ def start() -> None:
     # monitoring + backups: HTTP checks honour each monitor's own interval, so a 1-minute tick is fine
     scheduler.add_job(
         job_calendar_alerts, IntervalTrigger(minutes=5), id="calendar_alerts", replace_existing=True
+    )
+    scheduler.add_job(
+        job_yougile_alerts, IntervalTrigger(minutes=5), id="yougile_alerts", replace_existing=True
     )
     scheduler.add_job(job_http_checks, IntervalTrigger(minutes=1), id="http_checks", replace_existing=True)
     scheduler.add_job(

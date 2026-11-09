@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { getToken, post, put, type CalendarAlerts, type Status } from "../lib/api";
+import { getToken, post, put, type CalendarAlerts, type Status, type YouGileAlerts } from "../lib/api";
 import { useFetch } from "../lib/useFetch";
 import { currentSubscription, isStandalone, pushSupported, subscribePush, unsubscribePush } from "../lib/push";
 import { useToast } from "../components/Toast";
@@ -12,6 +12,7 @@ function Chip({ on, label }: { on: boolean; label: string }) {
 export default function Settings({ onLogout }: { onLogout: () => void }) {
   const { data: status } = useFetch<Status>("/api/status");
   const { data: alerts, setData: setAlerts } = useFetch<CalendarAlerts>("/api/calendar/alerts");
+  const { data: ygAlerts, setData: setYgAlerts } = useFetch<YouGileAlerts>("/api/yougile/alerts");
   const [subscribed, setSubscribed] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
   const toast = useToast();
@@ -59,6 +60,19 @@ export default function Settings({ onLogout }: { onLogout: () => void }) {
       toast("Сохранено");
     } catch (e) {
       setAlerts(alerts);
+      toast((e as Error).message, true);
+    }
+  }
+
+  async function saveYgAlerts(patch: Partial<YouGileAlerts>) {
+    if (!ygAlerts) return;
+    const next = { ...ygAlerts, ...patch };
+    setYgAlerts(next);
+    try {
+      setYgAlerts(await put<YouGileAlerts>("/api/yougile/alerts", next));
+      toast("Сохранено");
+    } catch (e) {
+      setYgAlerts(ygAlerts);
       toast((e as Error).message, true);
     }
   }
@@ -161,6 +175,59 @@ export default function Settings({ onLogout }: { onLogout: () => void }) {
           </label>
         )}
         <p className="small muted">Проверка каждые 5 минут, уведомления приходят пушем и в Telegram.</p>
+      </div>
+
+      <div className="card stack">
+        <h3>Уведомления YouGile</h3>
+        {status && !status.yougile && <p className="muted small">Задайте YOUGILE_API_KEY в .env на сервере.</p>}
+        <label className="field">
+          <span>Какие задачи</span>
+          <select
+            className="input"
+            value={ygAlerts?.scope ?? "all"}
+            disabled={!ygAlerts}
+            onChange={(e) => saveYgAlerts({ scope: e.target.value as YouGileAlerts["scope"] })}
+          >
+            <option value="all">Все задачи компании</option>
+            <option value="mine">Только мои (исполнитель или автор)</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>Напоминать перед дедлайном со временем</span>
+          <select
+            className="input"
+            value={ygAlerts?.remind_minutes ?? 60}
+            disabled={!ygAlerts}
+            onChange={(e) => saveYgAlerts({ remind_minutes: Number(e.target.value) })}
+          >
+            {(ygAlerts?.choices ?? [0, 15, 30, 60, 120, 180]).map((m) => (
+              <option key={m} value={m}>
+                {m === 0 ? "Не напоминать" : m < 60 ? `За ${m} мин` : `За ${m / 60} ч`}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="row" style={{ gap: 8, alignItems: "center" }}>
+          <input
+            type="checkbox"
+            checked={ygAlerts?.watch_changes ?? true}
+            disabled={!ygAlerts}
+            onChange={(e) => saveYgAlerts({ watch_changes: e.target.checked })}
+          />
+          <span>Сообщать о новых задачах, назначениях на меня, выполнении и переносе сроков</span>
+        </label>
+        <label className="row" style={{ gap: 8, alignItems: "center" }}>
+          <input
+            type="checkbox"
+            checked={ygAlerts?.brief ?? true}
+            disabled={!ygAlerts}
+            onChange={(e) => saveYgAlerts({ brief: e.target.checked })}
+          />
+          <span>Просроченные и ближайшие дедлайны в утреннем брифе</span>
+        </label>
+        <p className="small muted">
+          Проверка каждые 5 минут, пушем и в Telegram. Свои действия не присылаются. Дедлайны без времени — только в брифе.
+        </p>
       </div>
 
       <div className="card stack">
