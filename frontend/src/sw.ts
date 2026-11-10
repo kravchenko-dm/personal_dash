@@ -16,10 +16,11 @@ precacheAndRoute(self.__WB_MANIFEST);
 // SPA navigations fall back to the cached shell
 registerRoute(new NavigationRoute(createHandlerBoundToURL("/index.html"), { denylist: [/^\/api\//] }));
 
-// API: network first, short cache so the app opens offline with stale data
+// API: always the network; the cache is only a fallback when offline. No timeout: on a slow
+// connection a timeout would show stale data and never replace it with the late fresh answer.
 registerRoute(
   ({ url }) => url.pathname.startsWith("/api/"),
-  new NetworkFirst({ cacheName: "api", networkTimeoutSeconds: 8 }),
+  new NetworkFirst({ cacheName: "api" }),
   "GET"
 );
 

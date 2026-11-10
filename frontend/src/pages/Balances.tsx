@@ -5,13 +5,14 @@ import { fmtMoney, relTime } from "../lib/format";
 import { Modal } from "../components/Modal";
 import { useToast } from "../components/Toast";
 
-function Sparkline({ accountId }: { accountId: number }) {
+function Sparkline({ accountId, version }: { accountId: number; version: string | null }) {
   const [points, setPoints] = useState<number[]>([]);
+  // `version` is the account's last check time: a new sample means the line must be reloaded
   useEffect(() => {
     get<{ value: number }[]>(`/api/balances/${accountId}/history?limit=60`)
       .then((rows) => setPoints(rows.map((r) => r.value)))
       .catch(() => setPoints([]));
-  }, [accountId]);
+  }, [accountId, version]);
   if (points.length < 2) return null;
   const min = Math.min(...points);
   const max = Math.max(...points);
@@ -142,7 +143,7 @@ function AccountForm({
 
 export default function Balances() {
   const providers = useFetch<ProviderInfo[]>("/api/balances/providers");
-  const accounts = useFetch<BalanceAccount[]>("/api/balances");
+  const accounts = useFetch<BalanceAccount[]>("/api/balances", [], { pollMs: 60_000 });
   const [editing, setEditing] = useState<BalanceAccount | null | "new">(null);
   const [refreshing, setRefreshing] = useState(false);
   const toast = useToast();
@@ -206,7 +207,7 @@ export default function Balances() {
             <div className="big" style={{ color: a.alert_below !== null && a.last_value !== null && a.last_value < a.alert_below ? "var(--danger)" : undefined }}>
               {fmtMoney(a.last_value, a.currency)}
             </div>
-            <Sparkline accountId={a.id} />
+            <Sparkline accountId={a.id} version={a.last_checked_at} />
             {a.last_error ? (
               <div className="small" style={{ color: "var(--danger)" }}>{a.last_error}</div>
             ) : (
