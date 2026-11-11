@@ -15,6 +15,12 @@ from app.services import alerts, monitoring
 AGENT = Path(__file__).resolve().parents[2] / "agent" / "dash_agent.py"
 
 
+@pytest.fixture(autouse=True)
+def no_service_grace(monkeypatch):
+    """Most tests expect an incident on the first bad report; the grace period has its own test."""
+    monkeypatch.setattr(monitoring, "SERVICE_GRACE", timedelta(0))
+
+
 def load_agent():
     spec = importlib.util.spec_from_file_location("dash_agent", AGENT)
     mod = importlib.util.module_from_spec(spec)
@@ -123,6 +129,45 @@ async def test_report_metrics_incidents_and_commands(client, auth):
         await client.get(f"/api/projects/{pid}/servers/{s['id']}/commands/{cmd['id']}", headers=auth)
     ).json()
     assert done["status"] == "done" and done["output"] == "line1\nline2"
+
+
+async def test_short_service_outage_is_not_an_incident(client, auth, monkeypatch):
+    monkeypatch.setattr(monitoring, "SERVICE_GRACE", timedelta(minutes=2))
+    sent = []
+
+    async def fake_notify(db, text, url, tag):
+        sent.append(text)
+
+    monkeypatch.setattr(alerts, "_notify", fake_notify)
+    pid, server = await make_project_and_server(client, auth)
+    hdr = {"X-Agent-Token": server["token"]}
+    down = fake_report(services=[{"name": "api", "kind": "docker", "status": "exited", "restarts": 0}])
+
+    # a deploy: down for one report, then back -> nothing at all
+    await client.post("/api/agent/report", json=down, headers=hdr)
+    await client.post("/api/agent/report", json=fake_report(), headers=hdr)
+    assert (await client.get(f"/api/projects/{pid}/incidents", headers=auth)).json() == [] and sent == []
+
+    # down and staying down: quiet inside the grace period, an incident after it
+    await client.post("/api/agent/report", json=down, headers=hdr)
+    await client.post("/api/agent/report", json=down, headers=hdr)
+    assert (await client.get(f"/api/projects/{pid}/incidents", headers=auth)).json() == []
+    async with SessionLocal() as db:
+        srv = await db.get(Server, server["id"])
+        since = (datetime.now(timezone.utc) - timedelta(minutes=3)).isoformat()
+        srv.last_report = {**srv.last_report, "_bad_since": {"api": since}}
+        await db.commit()
+    await client.post("/api/agent/report", json=down, headers=hdr)
+    incidents = (await client.get(f"/api/projects/{pid}/incidents", headers=auth)).json()
+    assert len(incidents) == 1 and incidents[0]["kind"] == "service_down" and len(sent) == 1
+
+    # recovery resolves it and clears the timer
+    await client.post("/api/agent/report", json=fake_report(), headers=hdr)
+    assert all(
+        i["resolved_at"] for i in (await client.get(f"/api/projects/{pid}/incidents", headers=auth)).json()
+    )
+    async with SessionLocal() as db:
+        assert (await db.get(Server, server["id"])).last_report["_bad_since"] == {}
 
 
 async def test_failed_units_and_restart_loop(client, auth):

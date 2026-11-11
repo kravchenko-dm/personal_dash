@@ -20,6 +20,9 @@ BACKUP_KINDS = {"backup", "backup_snapshots", "restore", "backup_check"}
 BAD_SERVICE_STATES = {"failed", "stopped", "exited", "dead", "unhealthy", "missing", "restarting", "stale"}
 # "idle" = scheduled job between runs, "running"/"starting" fine
 RETENTION_DAYS = 30
+# a service must stay bad this long before it is an incident: a deploy restarts containers and
+# the health check refuses connections for a few seconds, which is not worth two notifications
+SERVICE_GRACE = timedelta(minutes=2)
 
 
 # ---------- tokens ----------
@@ -53,6 +56,7 @@ def _worst_disk(metrics: dict[str, Any]) -> tuple[float, str]:
 async def ingest_report(db: AsyncSession, server: Server, report: dict[str, Any]) -> list[AgentCommand]:
     now = datetime.now(timezone.utc)
     prev_restarts: dict[str, int] = dict((server.last_report or {}).get("_restarts", {}))
+    prev_bad_since: dict[str, str] = dict((server.last_report or {}).get("_bad_since", {}))
     server.hostname = report.get("hostname") or server.hostname
     server.os = report.get("pretty_os") or report.get("os") or server.os
     server.agent_version = report.get("agent_version")
@@ -78,7 +82,7 @@ async def ingest_report(db: AsyncSession, server: Server, report: dict[str, Any]
             disk_pct=disk_pct,
         )
     )
-    await _evaluate_server(db, server, disk_pct, disk_path, prev_restarts)
+    await _evaluate_server(db, server, disk_pct, disk_path, prev_restarts, prev_bad_since, now)
     await alerts.resolve_incident(
         db, server.project_id, "agent_silent", str(server.id), f"агент {server.name} снова на связи"
     )
@@ -101,9 +105,17 @@ async def ingest_report(db: AsyncSession, server: Server, report: dict[str, Any]
 
 
 async def _evaluate_server(
-    db: AsyncSession, server: Server, disk_pct: float, disk_path: str, prev_restarts: dict[str, int]
+    db: AsyncSession,
+    server: Server,
+    disk_pct: float,
+    disk_path: str,
+    prev_restarts: dict[str, int],
+    prev_bad_since: dict[str, str] | None = None,
+    now: datetime | None = None,
 ) -> None:
     pid = server.project_id
+    now = now or datetime.now(timezone.utc)
+    bad_since: dict[str, str] = {}
     # disk
     if disk_pct >= server.disk_alert_pct:
         await alerts.open_incident(
@@ -128,6 +140,11 @@ async def _evaluate_server(
         if svc.get("discovered") and status in ("exited", "stopped", "dead"):
             bad = False  # unlisted stopped containers are usually intentional (one-off runs)
         if bad:
+            name = str(svc.get("name"))
+            since_iso = (prev_bad_since or {}).get(name) or now.isoformat()
+            bad_since[name] = since_iso
+            if now - datetime.fromisoformat(since_iso) < SERVICE_GRACE:
+                continue  # maybe just a restart; restart-loop detection below is skipped for this pass
             reason = (
                 status
                 if status in BAD_SERVICE_STATES
@@ -162,8 +179,12 @@ async def _evaluate_server(
             await alerts.resolve_incident(
                 db, pid, "restart_loop", key, f"сервис {svc.get('name')} на {server.name} стабилен"
             )
-    server.last_report["_restarts"] = {
-        s.get("name"): int(s.get("restarts") or 0) for s in server.last_report.get("services", [])
+    server.last_report = {
+        **server.last_report,
+        "_restarts": {
+            s.get("name"): int(s.get("restarts") or 0) for s in server.last_report.get("services", [])
+        },
+        "_bad_since": bad_since,
     }
     # failed units anywhere on the host
     failed = set((server.last_report or {}).get("failed_units", []))
