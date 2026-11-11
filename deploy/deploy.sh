@@ -6,6 +6,8 @@ cd /opt/personal_dash
 git fetch origin main
 git reset --hard origin/main
 docker compose up -d --build --remove-orphans
+# Caddy is not recreated when only the Caddyfile changed: reload it in place
+docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile || echo "caddy reload failed"
 docker image prune -f >/dev/null
 # migrations run on startup, give the backend up to 90 s to come up
 for i in $(seq 1 18); do

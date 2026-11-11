@@ -354,3 +354,15 @@ class BackupRun(Base):
     added_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     results: Mapped[list | None] = mapped_column(JSON, nullable=True)
     output: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class LoginEvent(Base):
+    """Every attempt to log in to the dashboard: kept in the DB so it survives deploys."""
+
+    __tablename__ = "login_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    ip: Mapped[str] = mapped_column(String(64), index=True)
+    user_agent: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    result: Mapped[str] = mapped_column(String(12))  # ok | failed | blocked

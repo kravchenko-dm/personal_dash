@@ -12,4 +12,6 @@ COPY backend/alembic ./alembic
 COPY agent ./agent
 
 EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# behind Caddy: take the visitor's address from X-Forwarded-For (the port is not published,
+# only Caddy on the compose network can reach it)
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]

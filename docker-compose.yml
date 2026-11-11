@@ -44,7 +44,9 @@ services:
     environment:
       APP_DOMAIN: ${APP_DOMAIN}
     volumes:
-      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # the directory, not the file: git replaces files on deploy and a single-file bind mount
+      # would keep showing the old one
+      - ./deploy:/etc/caddy:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { getToken, post, put, type CalendarAlerts, type Status, type YouGileAlerts } from "../lib/api";
+import { getToken, post, put, setToken, type CalendarAlerts, type SecurityInfo, type Status, type YouGileAlerts } from "../lib/api";
+import { relTime } from "../lib/format";
 import { useFetch } from "../lib/useFetch";
 import { currentSubscription, isStandalone, pushSupported, subscribePush, unsubscribePush } from "../lib/push";
 import { useToast } from "../components/Toast";
@@ -13,6 +14,7 @@ export default function Settings({ onLogout }: { onLogout: () => void }) {
   const { data: status } = useFetch<Status>("/api/status");
   const { data: alerts, setData: setAlerts } = useFetch<CalendarAlerts>("/api/calendar/alerts");
   const { data: ygAlerts, setData: setYgAlerts } = useFetch<YouGileAlerts>("/api/yougile/alerts");
+  const security = useFetch<SecurityInfo>("/api/auth/events");
   const [subscribed, setSubscribed] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
   const toast = useToast();
@@ -44,6 +46,23 @@ export default function Settings({ onLogout }: { onLogout: () => void }) {
     try {
       const { sent } = await post<{ sent: number }>("/api/push/test");
       toast(sent ? `Отправлено на ${sent} устр.` : "Нет подписок");
+    } catch (e) {
+      toast((e as Error).message, true);
+    }
+  }
+
+  async function logoutAll() {
+    if (
+      !confirm(
+        "Все входы на других устройствах станут недействительны, им придётся ввести пароль заново. " +
+          "Токен в «Командах» на iPhone тоже перестанет работать — скопируйте новый. Продолжить?"
+      )
+    )
+      return;
+    try {
+      const { token } = await post<{ token: string }>("/api/auth/logout-all");
+      setToken(token);
+      toast("Все остальные сессии завершены");
     } catch (e) {
       toast((e as Error).message, true);
     }
@@ -228,6 +247,42 @@ export default function Settings({ onLogout }: { onLogout: () => void }) {
         <p className="small muted">
           Проверка каждые 5 минут, пушем и в Telegram. Свои действия не присылаются. Дедлайны без времени — только в брифе.
         </p>
+      </div>
+
+      <div className="card stack">
+        <h3>Безопасность</h3>
+        {security.data ? (
+          <>
+            <p className="small muted">
+              Неверных паролей за сутки: {security.data.failed_24h}. После {security.data.max_fails} ошибок с одного
+              адреса вход с него закрывается на {security.data.window_minutes} мин, приходит алерт. Вход с нового адреса —
+              тоже алерт.
+            </p>
+            {security.data.locked_ips.length > 0 && (
+              <p className="small" style={{ color: "var(--danger)" }}>
+                Сейчас заблокированы: {security.data.locked_ips.join(", ")}
+              </p>
+            )}
+            <div className="stack" style={{ gap: 4 }}>
+              {security.data.events.slice(0, 12).map((e, i) => (
+                <div key={i} className="small row between" style={{ gap: 8 }}>
+                  <span>
+                    {e.result === "ok" ? "✅" : e.result === "blocked" ? "⛔" : "❌"} {e.ip}
+                  </span>
+                  <span className="muted" title={e.user_agent ?? ""} style={{ textAlign: "right" }}>
+                    {relTime(e.ts)}
+                  </span>
+                </div>
+              ))}
+              {security.data.events.length === 0 && <p className="small muted">Попыток входа пока не было.</p>}
+            </div>
+          </>
+        ) : (
+          <p className="muted">…</p>
+        )}
+        <button className="btn danger" onClick={logoutAll}>
+          Выйти на всех устройствах
+        </button>
       </div>
 
       <div className="card stack">

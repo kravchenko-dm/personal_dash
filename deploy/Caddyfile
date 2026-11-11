@@ -1,6 +1,33 @@
 {$APP_DOMAIN} {
 	encode gzip
 
+	# access log in the caddy_data volume: survives deploys, ~200 MB max, 90 days.
+	# Authorization/Cookie headers are redacted by Caddy itself; tokens in URLs and the
+	# agent / Telegram secret headers are removed here.
+	log {
+		output file /data/access.log {
+			roll_size 20MiB
+			roll_keep 10
+			roll_keep_for 2160h
+		}
+		format filter {
+			request>uri query {
+				replace token ***
+			}
+			request>headers>X-Agent-Token delete
+			request>headers>X-Telegram-Bot-Api-Secret-Token delete
+			wrap json
+		}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
 	handle /api/* {
 		reverse_proxy backend:8000
 	}

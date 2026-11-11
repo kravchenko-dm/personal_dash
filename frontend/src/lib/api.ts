@@ -29,7 +29,8 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
   const res = await fetch(path, { ...init, headers });
-  if (res.status === 401) {
+  // a wrong password is a 401 too, but it must not look like an expired session
+  if (res.status === 401 && path !== "/api/auth/login") {
     setToken(null);
     window.dispatchEvent(new Event("dash:logout"));
     throw new ApiError(401, "Нужно войти");
@@ -56,6 +57,21 @@ export const patch = <T>(p: string, body: unknown) => api<T>(p, { method: "PATCH
 export const del = (p: string) => api<void>(p, { method: "DELETE" });
 
 // ---------- types ----------
+
+export interface LoginEvent {
+  ts: string;
+  ip: string;
+  user_agent: string | null;
+  result: "ok" | "failed" | "blocked";
+}
+
+export interface SecurityInfo {
+  events: LoginEvent[];
+  failed_24h: number;
+  locked_ips: string[];
+  max_fails: number;
+  window_minutes: number;
+}
 
 export type TaskStatus = "todo" | "doing" | "done";
 
