@@ -217,14 +217,18 @@ async def _run(bot, chat_id, status, source, title, url, file_id, file_name, ins
     digest: media_text.Digest | None = None
     try:
         digest = await media_text.summarize(
-            media.paragraphs(tr.segments), job.title, tr.duration, tr.language, instruction
-        )
+            media.paragraphs(tr.segments, names={} if tr.has_speakers else None),  # raw "1:S0" labels
+            job.title, tr.duration, tr.language, instruction,
+        )  # fmt: skip
     except Exception as exc:
         log.exception("media summary failed")
         await bot.send_message(chat_id, f"⚠️ Выжимка не получилась ({exc}), но расшифровка готова.")
 
     async with SessionLocal() as db:
         job = await db.get(MediaJob, job.id)
+        if tr.has_speakers:
+            named = {sp.label: sp.name for sp in digest.speakers} if digest else {}
+            job.speakers = media_text.speaker_names(job.segments, named)
         if digest:
             job.summary = digest.as_text()
             job.proposed_tasks = [p.model_dump() for p in digest.proposed_tasks]
@@ -264,8 +268,24 @@ def _heading(job: MediaJob) -> str:
     return head
 
 
+def _names(job: MediaJob) -> dict[str, str] | None:
+    """label -> speaker name, or None when the recording has no speaker labels."""
+    if job.speakers:
+        return job.speakers
+    if any(media.speaker_of(sg) for sg in job.segments or []):
+        return media_text.speaker_names(job.segments)
+    return None
+
+
+def _people(job: MediaJob) -> str:
+    names = list(dict.fromkeys((_names(job) or {}).values()))
+    return f"👥 {', '.join(names)}" if len(names) > 1 else ""
+
+
 def _digest_message(job: MediaJob) -> str:
     head = f"{_heading(job)}\n{_meta_line(job)}"
+    if _people(job):
+        head += f"\n{_people(job)}"
     body = job.summary or "Выжимки нет — расшифровка в файле."
     tail = ""
     if job.proposed_tasks and bot_access.is_owner(job.chat_id):
@@ -328,9 +348,12 @@ def _menu(job: MediaJob, target: str) -> InlineKeyboardMarkup:
 
 
 def _transcript_md(job: MediaJob, texts: list[str] | None = None, lang: str | None = None,
-                   summary: dict | None = None) -> str:  # fmt: skip
+                   summary: dict | None = None, names: dict[str, str] | None = None) -> str:  # fmt: skip
     title = (summary or {}).get("title") or job.summary_title or job.title
+    names = names or _names(job)
     head = f"# {title}\n\n{_meta_line(job)}"
+    if _people(job):
+        head += f"\n\nУчастники: {', '.join(dict.fromkeys((names or {}).values()))}"
     if job.source.startswith("http"):
         head += f"\n\nИсточник: {job.title} — {job.source}"
     if texts is not None:
@@ -340,7 +363,7 @@ def _transcript_md(job: MediaJob, texts: list[str] | None = None, lang: str | No
     )
     if summary_text:
         head += f"\n\n## Выжимка\n\n{summary_text}"
-    return f"{head}\n\n## {'Текст' if texts is not None else 'Расшифровка'}\n\n{media.paragraphs(job.segments, texts)}\n"
+    return f"{head}\n\n## {'Текст' if texts is not None else 'Расшифровка'}\n\n{media.paragraphs(job.segments, texts, names=names)}\n"
 
 
 async def _cached(job_id: int, key: str, make):
@@ -378,6 +401,7 @@ async def _translate(bot: Bot, chat_id: int, job_id: int, target: str, part: str
             await status.set(f"🌐 Перевожу {to}: {done}/{total}…")
 
     summary = texts = None
+    names = _names(job)
     async with _sem:
         try:
             if want_summary:
@@ -389,6 +413,8 @@ async def _translate(bot: Bot, chat_id: int, job_id: int, target: str, part: str
                 texts = await _cached(
                     job.id, f"lines:{target}", lambda: media_text.translate(job.segments, target, progress)
                 )
+                if names and target != media_text.SUMMARY_LANG:  # names are in Russian
+                    names = await _cached(job.id, f"names:{target}", lambda: _translate_names(names, target))
         except Exception as exc:
             log.exception("media translation failed")
             await status.set(f"❌ Перевод не получился: {exc}")
@@ -400,20 +426,32 @@ async def _translate(bot: Bot, chat_id: int, job_id: int, target: str, part: str
         await bot.send_document(
             chat_id,
             BufferedInputFile(
-                _transcript_md(job, texts, target, summary).encode(), filename=f"{name}.{target}.md"
+                _transcript_md(job, texts, target, summary, names).encode(), filename=f"{name}.{target}.md"
             ),
             caption=f"Весь текст {to}",
         )
     if part in ("srt", "all"):
         await bot.send_document(
             chat_id,
-            BufferedInputFile(media.srt(job.segments, texts).encode(), filename=f"{name}.{target}.srt"),
+            BufferedInputFile(
+                media.srt(job.segments, texts, names).encode(), filename=f"{name}.{target}.srt"
+            ),
             caption=f"Субтитры {to}",
         )
     try:
         await status.message.delete()
     except Exception:
         pass
+
+
+async def _translate_names(names: dict[str, str], target: str) -> dict[str, str]:
+    labels = list(names)
+    try:
+        out = await media_text.translate([[0, 0, names[k]] for k in labels], target)
+    except Exception:
+        log.exception("speaker names translation failed")
+        return names
+    return {k: (out[i] if i < len(out) and out[i] else names[k]) for i, k in enumerate(labels)}
 
 
 # ---------- buttons ----------
@@ -497,7 +535,9 @@ async def cb_srt(query: CallbackQuery, bot: Bot) -> None:
     await query.answer()
     await bot.send_document(
         query.message.chat.id,
-        BufferedInputFile(media.srt(job.segments).encode(), filename=f"{_safe_name(job.title)}.srt"),
+        BufferedInputFile(
+            media.srt(job.segments, names=_names(job)).encode(), filename=f"{_safe_name(job.title)}.srt"
+        ),
         caption="Субтитры на языке оригинала"
-        + ("" if job.stt_model in media.VERBOSE_MODELS else " (грубые: модель не дала таймкоды)"),
+        + ("" if media.has_timecodes(job.stt_model) else " (грубые: модель не дала таймкоды)"),
     )

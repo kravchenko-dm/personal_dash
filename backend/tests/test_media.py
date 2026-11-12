@@ -238,3 +238,131 @@ async def test_translation_menu_parts_and_cache(monkeypatch):
     assert calls == [("lines", "ru"), ("summary", "en")]  # paid once per language
     assert bot.docs == ["ГОТУЙТЕСЯ.ru.srt", "ГОТУЙТЕСЯ.ru.md"]
     assert [t for t, _ in bot.sent if t.startswith("🌐 Planning")] == ["🌐 Planning\n\nBudget."] * 2
+
+
+def test_russian_detection():
+    assert media.looks_russian("Я считаю, что мы как парламентарии будем говорить")
+    assert not media.looks_russian("Я вважаю, що ми як парламентарі будемо говорити і їсти")  # Ukrainian
+    assert not media.looks_russian("I think we as parliamentarians will talk")
+    assert not media.looks_russian("ну")
+
+
+def test_split_turn_shares_time_by_length():
+    out = media.split_turn(10, 30, "Первое предложение тут. " + "Второе длинное предложение. " * 6, "1:S0")
+    assert len(out) > 1 and out[0][0] == 10 and out[-1][1] == 30 and all(sg[3] == "1:S0" for sg in out)
+    assert all(a[1] == b[0] for a, b in zip(out, out[1:], strict=False))
+    assert media.split_turn(0, 5, "Коротко.", None) == [[0, 5, "Коротко."]]
+
+
+async def test_diarized_chunk_labels_and_whisper_fallback(monkeypatch, tmp_path):
+    from app.config import get_settings
+
+    calls = []
+
+    async def fake_request(client, data_url, model):
+        calls.append(model)
+        if model == "ai-sage/gigaam-v3-diarize" and len(calls) > 1:
+            raise media.MediaError("503")
+        if model == "ai-sage/gigaam-v3-diarize":
+            return {"duration": 20, "segments": [
+                {"start": 0, "end": 5, "text": "Здравствуйте.", "speaker": "S0"},
+                {"start": 5, "end": 9, "text": "Добрый день.", "speaker": "S1"}]}  # fmt: skip
+        return {"language": "russian", "segments": [{"start": 0, "end": 2, "text": "Без меток."}]}
+
+    monkeypatch.setattr(media, "_stt_request", fake_request)
+    monkeypatch.setattr(media, "_prices", {"x": 1.0})
+    get_settings.cache_clear()
+    path = tmp_path / "c.mp3"
+    path.write_bytes(b"x")
+    segs, _, _, model = await media._transcribe_chunk(None, path, 1800, 20, index=1, diarize=True)
+    assert segs == [[1800, 1805, "Здравствуйте.", "2:S0"], [1805, 1809, "Добрый день.", "2:S1"]]
+    segs, lang, _, model = await media._transcribe_chunk(None, path, 0, 20, index=0, diarize=True)
+    assert model == "openai/whisper-1" and segs == [[0, 2, "Без меток."]] and lang == "ru"
+
+
+async def test_prepare_picks_diarization_for_russian(monkeypatch, tmp_path):
+    seen = {}
+
+    async def fake_detect(src, work, duration):
+        return True, 0.02
+
+    async def fake_chunks(src, work, seconds=None):
+        seen["seconds"] = seconds
+        return [(tmp_path / "c.mp3", 0.0, 60.0)]
+
+    async def fake_transcribe(chunks, progress=None, diarize=False, language="", extra_cost=0.0):
+        seen.update(diarize=diarize, language=language, extra=extra_cost)
+
+    async def fake_probe(path):
+        return 60.0
+
+    monkeypatch.setattr(media, "detect_russian", fake_detect)
+    monkeypatch.setattr(media, "to_chunks", fake_chunks)
+    monkeypatch.setattr(media, "transcribe", fake_transcribe)
+    monkeypatch.setattr(media, "probe_duration", fake_probe)
+    await media.prepare_and_transcribe(tmp_path / "src.mp3", tmp_path)
+    assert seen == {"seconds": media.DIARIZE_CHUNK_SECONDS, "diarize": True, "language": "ru", "extra": 0.02}
+
+
+DIALOG = [
+    [0.0, 4.0, "Добрый день, начнём.", "1:S0"],
+    [4.0, 8.0, "Да, все на связи.", "1:S1"],
+    [8.0, 12.0, "Тогда по бюджету.", "1:S0"],
+]
+
+
+def test_speaker_formatting():
+    names = {"1:S0": "Ведущий", "1:S1": "Иван"}
+    text = media.paragraphs(DIALOG, names=names)
+    assert text.split("\n\n") == [
+        "**Ведущий** [00:00] Добрый день, начнём.",
+        "**Иван** [00:04] Да, все на связи.",
+        "**Ведущий** [00:08] Тогда по бюджету.",
+    ]
+    assert media.paragraphs(DIALOG, names={}).startswith("**1:S0** [00:00]")
+    assert media.paragraphs(DIALOG).startswith("[00:00] Добрый день, начнём. Да, все")  # no speakers mode
+    assert "\nИван: Да, все на связи.\n" in media.srt(DIALOG, names=names)
+    assert media_text.speaker_names(DIALOG + [[12, 13, "Ещё.", "2:S0"]], {"1:S0": "Ведущий"}) == {
+        "1:S0": "Ведущий", "1:S1": "Спикер 2", "2:S0": "Спикер 3"}  # fmt: skip
+
+
+async def test_bot_pipeline_names_speakers(monkeypatch):
+    async def fake_transcribe(src, work, progress=None):
+        return media.Transcript("…", "ru", 12, DIALOG, "ai-sage/gigaam-v3-diarize", 0.1)
+
+    async def fake_summary(text, title, duration, language, instruction=""):
+        assert "**1:S1** [00:04]" in text
+        return media_text.Digest(
+            title="Созвон", summary="Обсудили бюджет.",
+            speakers=[media_text.Speaker(label="1:S0", name="Ведущий"), media_text.Speaker(label="1:S1", name="Иван")],
+        )  # fmt: skip
+
+    async def fake_translate(segments, target, progress=None):
+        return [f"EN {s[2]}" for s in segments]
+
+    async def fake_translate_summary(title, text, target):
+        return {"title": "Call", "text": "Budget."}
+
+    monkeypatch.setattr(media, "prepare_and_transcribe", fake_transcribe)
+    monkeypatch.setattr(media_text, "summarize", fake_summary)
+    monkeypatch.setattr(media_text, "translate", fake_translate)
+    monkeypatch.setattr(media_text, "translate_summary", fake_translate_summary)
+    bot = FakeBot()
+    sent_docs = []
+
+    async def keep_doc(chat_id, document, caption=None):
+        sent_docs.append((document.filename, document.data.decode()))
+
+    bot.send_document = keep_doc
+    await telegram_media._process(bot, 42, telegram_media.Status(FakeMessage(bot, "⏳")), source="telegram:voice",
+                                  title="Голосовое", file_id="f")  # fmt: skip
+    async with SessionLocal() as db:
+        job = (await db.scalars(select(MediaJob))).one()
+    assert job.speakers == {"1:S0": "Ведущий", "1:S1": "Иван"}
+    assert "👥 Ведущий, Иван" in bot.sent[0][0]
+    assert "**Иван** [00:04] Да, все на связи." in sent_docs[0][1]
+
+    await telegram_media._translate(bot, 42, job.id, "en", "all")
+    md = dict(sent_docs)["Созвон.en.md"]
+    srt = dict(sent_docs)["Созвон.en.srt"]
+    assert "**EN Иван** [00:04] EN Да, все на связи." in md and "EN Ведущий: EN Тогда по бюджету." in srt

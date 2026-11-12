@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     stt_api_key: str = ""
     stt_model: str = "openai/whisper-1"
     stt_fallback_model: str = "openai/whisper-large-v3-turbo"
+    # Russian recordings go to a model that also tells speakers apart; empty disables it
+    stt_diarize_model: str = "ai-sage/gigaam-v3-diarize"
+    stt_probe_model: str = "openai/whisper-large-v3-turbo"  # 30 s sample to tell Russian from the rest
 
     google_client_id: str = ""
     google_client_secret: str = ""

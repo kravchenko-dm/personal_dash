@@ -69,5 +69,5 @@ def test_legacy_create_all_database_gets_stamped(tmp_path):
         "alembic_version" in names and "login_events" in names and "media_jobs" in names
     )  # stamped 0001, upgraded to head
     with sync_engine.connect() as conn:
-        assert conn.exec_driver_sql("SELECT version_num FROM alembic_version").scalar() == "0005"
+        assert conn.exec_driver_sql("SELECT version_num FROM alembic_version").scalar() == "0006"
     sync_engine.dispose()

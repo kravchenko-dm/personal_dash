@@ -1,6 +1,11 @@
 """Audio pipeline for the bot: get the audio (a Telegram file or a link via yt-dlp), cut it into
 small mono mp3 chunks with ffmpeg and transcribe the chunks with Polza.AI speech-to-text.
 
+Russian recordings go to a diarizing model (GigaAM) that also labels speakers; the rest to Whisper.
+A 30-second sample through a cheap model decides which. Speaker labels are per chunk ("2:S0" is
+speaker S0 of chunk 2): the summary step later maps them to names, merging the same person across
+chunks. Segments are [start, end, text] or [start, end, text, label].
+
 yt-dlp runs as a subprocess so it can be upgraded in place when YouTube changes something
 (see _self_update) without restarting the backend."""
 
@@ -23,9 +28,12 @@ log = logging.getLogger(__name__)
 
 STT_URL = "https://polza.ai/api/v1/audio/transcriptions"
 CHUNK_SECONDS = 600  # 10 min of 32 kbit/s mono mp3 is ~2.4 MB, well under Polza's ~15 MB body limit
+# speakers are labelled per chunk, so diarized chunks are longer: 30 min is ~7 MB (~10 MB as base64)
+DIARIZE_CHUNK_SECONDS = 1800
 MAX_SECONDS = 4 * 3600
 PARALLEL = 3
-VERBOSE_MODELS = {"openai/whisper-1"}  # the only Polza STT model that returns segments with timecodes
+VERBOSE_MODELS = {"openai/whisper-1"}  # the only Whisper on Polza that returns segments with timecodes
+SUBTITLE_CHARS = 110  # diarized turns are 15-25 s long: split them into subtitle-sized lines
 URL_RE = re.compile(r"https?://[^\s<>\"']+")
 
 # whisper-1 reports the language as an English name
@@ -53,9 +61,13 @@ class Transcript:
     text: str
     language: str
     duration: float
-    segments: list[list]  # [start, end, text]
+    segments: list[list]  # [start, end, text] or [start, end, text, speaker label]
     model: str
     cost_rub: float
+
+    @property
+    def has_speakers(self) -> bool:
+        return any(len(sg) > 3 for sg in self.segments)
 
 
 Progress = Callable[[int, int], Awaitable[None]]
@@ -157,8 +169,9 @@ async def download_url(url: str, workdir: Path) -> Audio:
 # ---------- chunks ----------
 
 
-async def to_chunks(src: Path, workdir: Path) -> list[tuple[Path, float, float]]:
+async def to_chunks(src: Path, workdir: Path, seconds: int | None = None) -> list[tuple[Path, float, float]]:
     """-> [(chunk path, offset seconds, chunk duration)]"""
+    seconds = seconds or CHUNK_SECONDS
     duration = await probe_duration(src)
     if duration > MAX_SECONDS + 60:
         raise MediaError(f"запись длиннее {MAX_SECONDS // 3600} часов")
@@ -167,7 +180,7 @@ async def to_chunks(src: Path, workdir: Path) -> list[tuple[Path, float, float]]
         [
             "nice", "-n", "10", "ffmpeg", "-nostdin", "-v", "error", "-i", str(src),
             "-vn", "-ac", "1", "-ar", "16000", "-c:a", "libmp3lame", "-b:a", "32k",
-            "-f", "segment", "-segment_time", str(CHUNK_SECONDS), "-reset_timestamps", "1",
+            "-f", "segment", "-segment_time", str(seconds), "-reset_timestamps", "1",
             str(pattern),
         ],
         1800,
@@ -179,7 +192,7 @@ async def to_chunks(src: Path, workdir: Path) -> list[tuple[Path, float, float]]
         )
     result, offset = [], 0.0
     for path in chunks:
-        length = await probe_duration(path) or CHUNK_SECONDS
+        length = await probe_duration(path) or seconds
         result.append((path, offset, length))
         offset += length
     return result
@@ -211,11 +224,12 @@ async def _price_per_minute(client: httpx.AsyncClient, model: str) -> float:
 
 
 async def _stt_request(client: httpx.AsyncClient, data_url: str, model: str) -> dict:
-    body = {
-        "model": model,
-        "file": data_url,
-        "response_format": "verbose_json" if model in VERBOSE_MODELS else "json",
-    }
+    fmt = "json"
+    if model in VERBOSE_MODELS:
+        fmt = "verbose_json"
+    elif model == get_settings().stt_diarize_model:
+        fmt = "diarized_json"
+    body = {"model": model, "file": data_url, "response_format": fmt}
     last = ""
     for attempt in range(3):
         try:
@@ -232,70 +246,158 @@ async def _stt_request(client: httpx.AsyncClient, data_url: str, model: str) -> 
     raise MediaError(f"распознавание ({model}) не удалось: {last}")
 
 
+def _data_url(path: Path) -> str:
+    return "data:audio/mpeg;base64," + base64.b64encode(path.read_bytes()).decode()
+
+
+_SENTENCE_END = re.compile(r"(?<=[.!?…])\s+")
+
+
+def split_turn(start: float, end: float, text: str, label: str | None) -> list[list]:
+    """A diarized turn is 15-25 s of speech: cut it at sentence ends into subtitle-sized lines and
+    share the time out by length (the model gives no word timings)."""
+    pieces: list[str] = []
+    for sentence in _SENTENCE_END.split(text.strip()):
+        if pieces and len(pieces[-1]) + len(sentence) < SUBTITLE_CHARS:
+            pieces[-1] += " " + sentence
+        else:
+            pieces.append(sentence)
+    pieces = [p for p in pieces if p.strip()] or [text.strip()]
+    total = sum(len(p) for p in pieces) or 1
+    out, t = [], start
+    for i, p in enumerate(pieces):
+        t_end = end if i == len(pieces) - 1 else t + (end - start) * len(p) / total
+        seg = [round(t, 2), round(t_end, 2), p.strip()]
+        if label:
+            seg.append(label)
+        out.append(seg)
+        t = t_end
+    return out
+
+
 async def _transcribe_chunk(
-    client: httpx.AsyncClient, path: Path, offset: float, length: float
+    client: httpx.AsyncClient, path: Path, offset: float, length: float, index: int = 0, diarize: bool = False
 ) -> tuple[list[list], str, float, str]:
     s = get_settings()
-    data_url = "data:audio/mpeg;base64," + base64.b64encode(path.read_bytes()).decode()
-    model = s.stt_model
-    try:
-        data = await _stt_request(client, data_url, model)
-    except MediaError:
-        if not s.stt_fallback_model or s.stt_fallback_model == model:
-            raise
-        log.warning("stt %s failed for %s, trying %s", model, path.name, s.stt_fallback_model)
-        model = s.stt_fallback_model
-        data = await _stt_request(client, data_url, model)
+    data_url = _data_url(path)
+    models = [m for m in ((s.stt_diarize_model if diarize else ""), s.stt_model, s.stt_fallback_model) if m]
+    models = list(dict.fromkeys(models))
+    for i, model in enumerate(models):
+        try:
+            data = await _stt_request(client, data_url, model)
+            break
+        except MediaError:
+            if i == len(models) - 1:
+                raise
+            log.warning("stt %s failed for %s, trying %s", model, path.name, models[i + 1])
     cost = float((data.get("usage") or {}).get("cost_rub") or 0)
     if not cost:  # Polza does not always report usage: estimate from the published per-minute price
         cost = float(data.get("duration") or length) / 60 * await _price_per_minute(client, model)
-    segs = [
-        [round(offset + float(sg["start"]), 2), round(offset + float(sg["end"]), 2), sg["text"].strip()]
-        for sg in data.get("segments") or []
-        if sg.get("text", "").strip()
-    ]
+    segs: list[list] = []
+    for sg in data.get("segments") or []:
+        text = (sg.get("text") or "").strip()
+        if not text:
+            continue
+        start, end = offset + float(sg["start"]), offset + float(sg["end"])
+        if sg.get("speaker") is not None:
+            segs += split_turn(start, end, text, f"{index + 1}:{sg['speaker']}")
+        else:
+            segs.append([round(start, 2), round(end, 2), text])
     if not segs and (data.get("text") or "").strip():
         segs = [[round(offset, 2), round(offset + length, 2), data["text"].strip()]]
     return segs, _iso_lang(data.get("language")), cost, model
 
 
-async def transcribe(chunks: list[tuple[Path, float, float]], progress: Progress | None = None) -> Transcript:
+async def transcribe(
+    chunks: list[tuple[Path, float, float]],
+    progress: Progress | None = None,
+    diarize: bool = False,
+    language: str = "",
+    extra_cost: float = 0.0,
+) -> Transcript:
     s = get_settings()
     if not s.stt_key:
         raise MediaError("не задан ключ распознавания (STT_API_KEY или LLM_PROVIDER=polza с LLM_API_KEY)")
     sem = asyncio.Semaphore(PARALLEL)
     done = 0
 
-    async with httpx.AsyncClient(timeout=300, headers={"Authorization": f"Bearer {s.stt_key}"}) as client:
+    async with _client() as client:
 
-        async def one(chunk: tuple[Path, float, float]):
+        async def one(index: int, chunk: tuple[Path, float, float]):
             nonlocal done
             async with sem:
-                res = await _transcribe_chunk(client, *chunk)
+                res = await _transcribe_chunk(client, *chunk, index=index, diarize=diarize)
             done += 1
             if progress:
                 await progress(done, len(chunks))
             return res
 
-        results = await asyncio.gather(*(one(c) for c in chunks))
+        results = await asyncio.gather(*(one(i, c) for i, c in enumerate(chunks)))
 
     segments = sorted((sg for r in results for sg in r[0]), key=lambda sg: sg[0])
     langs = Counter(r[1] for r in results if r[1])
     models = Counter(r[3] for r in results)
     return Transcript(
         text=" ".join(sg[2] for sg in segments),
-        language=langs.most_common(1)[0][0] if langs else "",
+        language=langs.most_common(1)[0][0] if langs else language,
         duration=sum(c[2] for c in chunks),
         segments=segments,
         model=models.most_common(1)[0][0],
-        cost_rub=round(sum(r[2] for r in results), 2),
+        cost_rub=round(sum(r[2] for r in results) + extra_cost, 2),
     )
 
 
+def _client() -> httpx.AsyncClient:
+    return httpx.AsyncClient(timeout=300, headers={"Authorization": f"Bearer {get_settings().stt_key}"})
+
+
+_NOT_RU = set("іїєґўәғқңөұүһ")  # Ukrainian, Belarusian, Kazakh letters
+
+
+def looks_russian(text: str) -> bool:
+    letters = [c for c in text.lower() if c.isalpha()]
+    if len(letters) < 10:
+        return False
+    cyr = sum("а" <= c <= "я" or c == "ё" or c in _NOT_RU for c in letters)
+    return cyr / len(letters) > 0.7 and not _NOT_RU & set(letters)
+
+
+async def detect_russian(src: Path, workdir: Path, duration: float) -> tuple[bool, float]:
+    """30 seconds from the first third of the recording through a cheap model. -> (russian?, cost)"""
+    s = get_settings()
+    if not s.stt_diarize_model or not s.stt_probe_model or not s.stt_key:
+        return False, 0.0
+    sample = workdir / "probe.mp3"
+    offset = min(60.0, duration / 3) if duration > 45 else 0.0
+    rc, _, _ = await _run(
+        [
+            "ffmpeg", "-nostdin", "-v", "error", "-y", "-ss", f"{offset:.1f}", "-i", str(src), "-t", "30",
+            "-vn", "-ac", "1", "-ar", "16000", "-c:a", "libmp3lame", "-b:a", "32k", str(sample),
+        ],
+        300,
+    )  # fmt: skip
+    if rc != 0 or not sample.exists():
+        return False, 0.0
+    try:
+        async with _client() as client:
+            data = await _stt_request(client, _data_url(sample), s.stt_probe_model)
+            cost = 0.5 * await _price_per_minute(client, s.stt_probe_model)
+    except MediaError as exc:
+        log.warning("language probe failed: %s", exc)
+        return False, 0.0
+    finally:
+        sample.unlink(missing_ok=True)
+    return looks_russian(data.get("text") or ""), cost
+
+
 async def prepare_and_transcribe(src: Path, workdir: Path, progress: Progress | None = None) -> Transcript:
-    chunks = await to_chunks(src, workdir)
+    duration = await probe_duration(src)
+    russian, probe_cost = await detect_russian(src, workdir, duration)
+    chunks = await to_chunks(src, workdir, DIARIZE_CHUNK_SECONDS if russian else CHUNK_SECONDS)
     src.unlink(missing_ok=True)  # free disk early, the chunks are all we need
-    return await transcribe(chunks, progress)
+    return await transcribe(
+        chunks, progress, diarize=russian, language="ru" if russian else "", extra_cost=probe_cost
+    )
 
 
 # ---------- formatting ----------
@@ -307,35 +409,65 @@ def ts(seconds: float) -> str:
     return f"{h}:{m:02d}:{sec:02d}" if h else f"{m:02d}:{sec:02d}"
 
 
-def srt(segments: list[list], texts: list[str] | None = None) -> str:
+def has_timecodes(model: str) -> bool:
+    return model in VERBOSE_MODELS or model == get_settings().stt_diarize_model
+
+
+def speaker_of(seg: list) -> str | None:
+    return seg[3] if len(seg) > 3 else None
+
+
+def srt(segments: list[list], texts: list[str] | None = None, names: dict[str, str] | None = None) -> str:
+    """With speaker names, a line that starts a new turn gets "Имя: " in front."""
+
     def stamp(t: float) -> str:
         ms = int(round(t * 1000))
         return f"{ms // 3600000:02d}:{ms % 3600000 // 60000:02d}:{ms % 60000 // 1000:02d},{ms % 1000:03d}"
 
-    blocks = []
-    for i, (start, end, text) in enumerate(segments):
+    blocks, prev = [], None
+    for i, seg in enumerate(segments):
+        start, end, text = seg[:3]
         line = texts[i] if texts is not None and i < len(texts) else text
+        who = speaker_of(seg)
+        if names and who and who != prev and names.get(who):
+            line = f"{names[who]}: {line}"
+        prev = who
         blocks.append(f"{i + 1}\n{stamp(start)} --> {stamp(end)}\n{line}\n")
     return "\n".join(blocks)
 
 
-def paragraphs(segments: list[list], texts: list[str] | None = None, every: float = 60) -> str:
-    """Readable transcript: a paragraph with a [mm:ss] mark roughly every minute, split at a sentence end."""
+def paragraphs(
+    segments: list[list],
+    texts: list[str] | None = None,
+    every: float = 60,
+    names: dict[str, str] | None = None,
+) -> str:
+    """Readable transcript: a paragraph with a [mm:ss] mark roughly every minute, split at a sentence end.
+    With speaker names (label -> name), every change of speaker starts a "**Имя** [mm:ss]" paragraph."""
     out: list[str] = []
     current: list[str] = []
-    start = 0.0
-    for i, (s0, _, text) in enumerate(segments):
+    start, who = 0.0, None
+    for i, seg in enumerate(segments):
+        s0, text = seg[0], seg[2]
         line = texts[i] if texts is not None and i < len(texts) else text
+        speaker = speaker_of(seg) if names is not None else None
         if current:
             elapsed = s0 - start
             if (
-                elapsed >= every and current[-1].rstrip().endswith((".", "!", "?", "…"))
-            ) or elapsed >= every * 3:
-                out.append(f"[{ts(start)}] " + " ".join(current))
+                speaker != who
+                or (elapsed >= every and current[-1].rstrip().endswith((".", "!", "?", "…")))
+                or elapsed >= every * 3
+            ):
+                out.append(_para(start, who, current, names))
                 current = []
         if not current:
-            start = s0
+            start, who = s0, speaker
         current.append(line)
     if current:
-        out.append(f"[{ts(start)}] " + " ".join(current))
+        out.append(_para(start, who, current, names))
     return "\n\n".join(out)
+
+
+def _para(start: float, who: str | None, lines: list[str], names: dict[str, str] | None) -> str:
+    name = (names or {}).get(who or "") or who
+    return (f"**{name}** " if name else "") + f"[{ts(start)}] " + " ".join(lines)

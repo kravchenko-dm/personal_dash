@@ -71,6 +71,13 @@ SUMMARY_PROMPT = """Ты делаешь конспект аудиозаписи 
 - proposed_tasks: конкретные действия для владельца, которые следуют из записи (кто что обещал
   сделать, что нужно проверить или подготовить). Если поводов нет — пустой список.
 
+Если в расшифровке есть метки спикеров (абзацы начинаются с «**1:S0**», «**2:S1**» — номер куска
+записи и метка в нём), заполни speakers: для КАЖДОЙ метки — кто это. Метки в разных кусках назначены
+независимо: один и тот же человек может быть «1:S0» и «2:S1» — узнай его по смыслу и дай одинаковое
+имя. Имя бери из записи (представился, к нему обратились), иначе роль: «Ведущий», «Гость»,
+«Клиент», «Спикер 1». Два разных человека не должны получить одно имя. В summary и key_points
+называй людей этими именами. Если меток нет — speakers пустой.
+
 Если пользователь дал пожелание — учти его в первую очередь."""
 
 SUMMARY_SCHEMA = {
@@ -89,6 +96,21 @@ SUMMARY_SCHEMA = {
                 "additionalProperties": False,
             },
         },
+        "speakers": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "label": {
+                        "type": "string",
+                        "description": "Метка из расшифровки как есть, например 1:S0",
+                    },
+                    "name": {"type": "string", "description": "Имя или роль, до 40 символов"},
+                },
+                "required": ["label", "name"],
+                "additionalProperties": False,
+            },
+        },
         "proposed_tasks": {
             "type": "array",
             "items": {
@@ -103,7 +125,7 @@ SUMMARY_SCHEMA = {
             },
         },
     },
-    "required": ["title", "summary", "key_points", "decisions", "chapters", "proposed_tasks"],
+    "required": ["title", "summary", "key_points", "decisions", "chapters", "speakers", "proposed_tasks"],
     "additionalProperties": False,
 }
 
@@ -111,6 +133,11 @@ SUMMARY_SCHEMA = {
 class Chapter(BaseModel):
     time: str
     title: str
+
+
+class Speaker(BaseModel):
+    label: str
+    name: str
 
 
 class Proposal(BaseModel):
@@ -125,6 +152,7 @@ class Digest(BaseModel):
     key_points: list[str] = Field(default_factory=list)
     decisions: list[str] = Field(default_factory=list)
     chapters: list[Chapter] = Field(default_factory=list)
+    speakers: list[Speaker] = Field(default_factory=list)
     proposed_tasks: list[Proposal] = Field(default_factory=list)
 
     def as_text(self) -> str:
@@ -136,6 +164,17 @@ class Digest(BaseModel):
         if self.chapters:
             parts.append("Содержание:\n" + "\n".join(f"{c.time} {c.title}" for c in self.chapters))
         return "\n\n".join(parts)
+
+
+def speaker_names(segments: list[list], named: dict[str, str] | None = None) -> dict[str, str]:
+    """label -> display name for every label in the transcript: the LLM's names where it gave them,
+    otherwise "Спикер N" in order of first appearance."""
+    out: dict[str, str] = {}
+    for sg in segments:
+        label = media.speaker_of(sg)
+        if label and label not in out:
+            out[label] = ((named or {}).get(label) or "").strip()[:40] or f"Спикер {len(out) + 1}"
+    return out
 
 
 async def summarize(
