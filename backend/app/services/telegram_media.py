@@ -228,6 +228,7 @@ async def _run(bot, chat_id, status, source, title, url, file_id, file_name, ins
         if digest:
             job.summary = digest.as_text()
             job.proposed_tasks = [p.model_dump() for p in digest.proposed_tasks]
+            job.summary_title = (digest.title or "")[:300]
             if digest.title and job.source.startswith("telegram:"):
                 job.title = digest.title[:300]
         await db.commit()
@@ -253,8 +254,18 @@ def _meta_line(job: MediaJob) -> str:
     return " · ".join(parts)
 
 
+PARTS = {"summary": "📝 Выжимку", "srt": "🎬 Субтитры", "text": "📄 Весь текст", "all": "✨ Всё"}
+
+
+def _heading(job: MediaJob) -> str:
+    head = f"🎙 {job.summary_title or job.title}"
+    if job.summary_title and job.title and job.summary_title != job.title and job.source.startswith("http"):
+        head += f"\n▶️ {job.title}"
+    return head
+
+
 def _digest_message(job: MediaJob) -> str:
-    head = f"🎙 {job.title}\n{_meta_line(job)}"
+    head = f"{_heading(job)}\n{_meta_line(job)}"
     body = job.summary or "Выжимки нет — расшифровка в файле."
     tail = ""
     if job.proposed_tasks and bot_access.is_owner(job.chat_id):
@@ -276,61 +287,129 @@ def _keyboard(job: MediaJob) -> InlineKeyboardMarkup:
     target = media_text.default_target(job.language)
     rows.append(
         [
-            InlineKeyboardButton(
-                text=f"🌐 Перевод {media_text.LANGS[target][1]}", callback_data=f"mtr:{job.id}:{target}"
-            ),
+            InlineKeyboardButton(text="🌐 Перевод…", callback_data=f"mtm:{job.id}:{target}"),
             InlineKeyboardButton(text="🎬 Субтитры", callback_data=f"msrt:{job.id}"),
         ]
     )
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _transcript_md(job: MediaJob, texts: list[str] | None = None, lang: str | None = None) -> str:
-    head = f"# {job.title}\n\n{_meta_line(job)}"
+def _targets(job: MediaJob) -> list[str]:
+    """Languages offered for translation: Russian and English, minus the recording's own language."""
+    return [lang for lang in ("ru", "en") if lang != job.language] or ["ru"]
+
+
+def _parts(job: MediaJob, target: str) -> list[str]:
+    parts = ["summary", "srt", "text", "all"]
+    if not job.summary or target == media_text.SUMMARY_LANG:
+        parts.remove("summary")  # the summary is already in Russian
+    if target == job.language:
+        parts = [p for p in parts if p == "summary"]
+    if len(parts) < 2:
+        parts = [p for p in parts if p != "all"]
+    return parts
+
+
+def _menu(job: MediaJob, target: str) -> InlineKeyboardMarkup:
+    parts = _parts(job, target)
+    buttons = [InlineKeyboardButton(text=PARTS[p], callback_data=f"mtr:{job.id}:{target}:{p}") for p in parts]
+    rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+    nav = []
+    for other in _targets(job):
+        if other != target:
+            nav.append(
+                InlineKeyboardButton(
+                    text=f"🔁 {media_text.LANGS[other][1]}", callback_data=f"mtm:{job.id}:{other}"
+                )
+            )
+    nav.append(InlineKeyboardButton(text="« Назад", callback_data=f"mback:{job.id}"))
+    rows.append(nav)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _transcript_md(job: MediaJob, texts: list[str] | None = None, lang: str | None = None,
+                   summary: dict | None = None) -> str:  # fmt: skip
+    title = (summary or {}).get("title") or job.summary_title or job.title
+    head = f"# {title}\n\n{_meta_line(job)}"
     if job.source.startswith("http"):
-        head += f"\n\nИсточник: {job.source}"
+        head += f"\n\nИсточник: {job.title} — {job.source}"
     if texts is not None:
         head += f"\n\nПеревод {media_text.LANGS.get(lang or '', ('', lang))[1]}"
-    elif job.summary:
-        head += f"\n\n## Выжимка\n\n{job.summary}"
+    summary_text = (summary or {}).get("text") or (
+        job.summary if texts is None or lang == media_text.SUMMARY_LANG else None
+    )
+    if summary_text:
+        head += f"\n\n## Выжимка\n\n{summary_text}"
     return f"{head}\n\n## {'Текст' if texts is not None else 'Расшифровка'}\n\n{media.paragraphs(job.segments, texts)}\n"
 
 
-async def _translate(bot: Bot, chat_id: int, job_id: int, target: str) -> None:
+async def _cached(job_id: int, key: str, make):
+    """Translations are paid for once: keep them on the job."""
+    async with SessionLocal() as db:
+        job = await db.get(MediaJob, job_id)
+        if key in (job.translations or {}):
+            return job.translations[key]
+    value = await make()
+    async with SessionLocal() as db:
+        job = await db.get(MediaJob, job_id)
+        job.translations = {**(job.translations or {}), key: value}
+        await db.commit()
+    return value
+
+
+async def _translate(bot: Bot, chat_id: int, job_id: int, target: str, part: str = "all") -> None:
     async with SessionLocal() as db:
         job = await db.get(MediaJob, job_id)
     if not job:
         await bot.send_message(chat_id, "Эта запись уже удалена.")
         return
     target = target or media_text.default_target(job.language)
-    if target == job.language:
-        await bot.send_message(chat_id, f"Запись и так на языке «{media_text.lang_name(target)}».")
+    parts = _parts(job, target)
+    if part not in parts:
+        await bot.send_message(chat_id, f"Это и так на языке «{media_text.lang_name(target)}».")
         return
-    status = Status(
-        await bot.send_message(chat_id, f"🌐 Перевожу {media_text.LANGS.get(target, ('', target))[1]}…")
-    )
+    want_summary = part in ("summary", "all") and "summary" in parts
+    want_lines = part in ("srt", "text", "all")
+    to = media_text.LANGS.get(target, ("", target))[1]
+    status = Status(await bot.send_message(chat_id, f"🌐 Перевожу {to}…"))
 
     async def progress(done: int, total: int) -> None:
         if total > 1:
-            await status.set(f"🌐 Перевожу: {done}/{total}…")
+            await status.set(f"🌐 Перевожу {to}: {done}/{total}…")
 
+    summary = texts = None
     async with _sem:
         try:
-            texts = await media_text.translate(job.segments, target, progress)
+            if want_summary:
+                summary = await _cached(
+                    job.id, f"summary:{target}",
+                    lambda: media_text.translate_summary(job.summary_title or job.title, job.summary, target),
+                )  # fmt: skip
+            if want_lines:
+                texts = await _cached(
+                    job.id, f"lines:{target}", lambda: media_text.translate(job.segments, target, progress)
+                )
         except Exception as exc:
             log.exception("media translation failed")
             await status.set(f"❌ Перевод не получился: {exc}")
             return
     name = _safe_name(job.title)
-    await bot.send_document(
-        chat_id,
-        BufferedInputFile(_transcript_md(job, texts, target).encode(), filename=f"{name}.{target}.md"),
-    )
-    await bot.send_document(
-        chat_id,
-        BufferedInputFile(media.srt(job.segments, texts).encode(), filename=f"{name}.{target}.srt"),
-        caption="Субтитры с переводом",
-    )
+    if summary:
+        await bot.send_message(chat_id, f"🌐 {summary['title']}\n\n{summary['text']}"[:4000])
+    if part in ("text", "all"):
+        await bot.send_document(
+            chat_id,
+            BufferedInputFile(
+                _transcript_md(job, texts, target, summary).encode(), filename=f"{name}.{target}.md"
+            ),
+            caption=f"Весь текст {to}",
+        )
+    if part in ("srt", "all"):
+        await bot.send_document(
+            chat_id,
+            BufferedInputFile(media.srt(job.segments, texts).encode(), filename=f"{name}.{target}.srt"),
+            caption=f"Субтитры {to}",
+        )
     try:
         await status.message.delete()
     except Exception:
@@ -382,13 +461,32 @@ async def cb_task(query: CallbackQuery) -> None:
     await query.answer(f"Добавлено: #{task.id}")
 
 
+@router.callback_query(F.data.startswith("mtm:"))
+async def cb_translate_menu(query: CallbackQuery) -> None:
+    job, parts = await _job_for(query)
+    if not job:
+        return
+    await query.answer()
+    await query.message.edit_reply_markup(reply_markup=_menu(job, parts[2]))
+
+
+@router.callback_query(F.data.startswith("mback:"))
+async def cb_menu_back(query: CallbackQuery) -> None:
+    job, _ = await _job_for(query)
+    if not job:
+        return
+    await query.answer()
+    await query.message.edit_reply_markup(reply_markup=_keyboard(job))
+
+
 @router.callback_query(F.data.startswith("mtr:"))
 async def cb_translate(query: CallbackQuery, bot: Bot) -> None:
     job, parts = await _job_for(query)
     if not job:
         return
+    part = parts[3] if len(parts) > 3 else "all"  # old buttons were "mtr:<id>:<lang>"
     await query.answer("Перевожу…")
-    _spawn(_safe(_translate(bot, query.message.chat.id, job.id, parts[2])))
+    _spawn(_safe(_translate(bot, query.message.chat.id, job.id, parts[2], part)))
 
 
 @router.callback_query(F.data.startswith("msrt:"))

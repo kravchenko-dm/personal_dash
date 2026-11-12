@@ -143,6 +143,11 @@ async def test_bot_pipeline_summary_tasks_and_translation(monkeypatch):
     monkeypatch.setattr(media_text, "summarize", fake_summary)
     monkeypatch.setattr(media_text, "translate", fake_translate)
 
+    async def fake_translate_summary(title, text, target):
+        return {"title": "Planning", "text": "We discussed the budget."}
+
+    monkeypatch.setattr(media_text, "translate_summary", fake_translate_summary)
+
     bot = FakeBot()
     status = telegram_media.Status(FakeMessage(bot, "⏳"))
     await asyncio.wait_for(
@@ -163,8 +168,9 @@ async def test_bot_pipeline_summary_tasks_and_translation(monkeypatch):
     text, keyboard = bot.sent[0]
     assert "🎙 Планёрка" in text and "Смета до пятницы" in text and "💸 0,90 ₽" in text
     datas = [b.callback_data for row in keyboard.inline_keyboard for b in row]
-    assert datas == [f"mtask:{job.id}:0", f"mtr:{job.id}:en", f"msrt:{job.id}"]
+    assert datas == [f"mtask:{job.id}:0", f"mtm:{job.id}:en", f"msrt:{job.id}"]
     assert bot.docs == ["Планёрка.md", "Планёрка.en.md", "Планёрка.en.srt"]
+    assert bot.sent[2][0].startswith("🌐 Planning")  # "переведи на английский" translates the summary too
 
     class Query:
         data = f"mtask:{job.id}:0"
@@ -191,3 +197,44 @@ async def test_download_error_is_reported(monkeypatch):
         bot, 1, telegram_media.Status(FakeMessage(bot, "⏳")), source="https://x", url="https://x"
     )
     assert bot.edits[-1].startswith("❌ Не получилось: не удалось скачать")
+
+
+async def test_translation_menu_parts_and_cache(monkeypatch):
+    calls = []
+
+    async def fake_translate(segments, target, progress=None):
+        calls.append(("lines", target))
+        return [f"RU {s[2]}" for s in segments]
+
+    async def fake_translate_summary(title, text, target):
+        calls.append(("summary", target))
+        return {"title": "Planning", "text": "Budget."}
+
+    monkeypatch.setattr(media_text, "translate", fake_translate)
+    monkeypatch.setattr(media_text, "translate_summary", fake_translate_summary)
+    async with SessionLocal() as db:
+        job = MediaJob(
+            chat_id=1, source="https://youtu.be/x", title="ГОТУЙТЕСЯ", summary_title="Готовьтесь к худшему",
+            summary="Суть", language="uk", segments=SEGMENTS, proposed_tasks=[], translations={},
+        )  # fmt: skip
+        db.add(job)
+        await db.commit()
+        await db.refresh(job)
+
+    # the summary is already Russian: no "Выжимку" for Russian, all four for English
+    def menu(target):
+        return [b.callback_data for row in telegram_media._menu(job, target).inline_keyboard for b in row]
+
+    assert menu("ru") == [f"mtr:{job.id}:ru:srt", f"mtr:{job.id}:ru:text", f"mtr:{job.id}:ru:all",
+                          f"mtm:{job.id}:en", f"mback:{job.id}"]  # fmt: skip
+    assert menu("en")[:4] == [f"mtr:{job.id}:en:{p}" for p in ("summary", "srt", "text", "all")]
+    assert telegram_media._digest_message(job).startswith("🎙 Готовьтесь к худшему\n▶️ ГОТУЙТЕСЯ")
+
+    bot = FakeBot()
+    await telegram_media._translate(bot, 1, job.id, "ru", "srt")
+    await telegram_media._translate(bot, 1, job.id, "ru", "text")
+    await telegram_media._translate(bot, 1, job.id, "en", "summary")
+    await telegram_media._translate(bot, 1, job.id, "en", "summary")
+    assert calls == [("lines", "ru"), ("summary", "en")]  # paid once per language
+    assert bot.docs == ["ГОТУЙТЕСЯ.ru.srt", "ГОТУЙТЕСЯ.ru.md"]
+    assert [t for t, _ in bot.sent if t.startswith("🌐 Planning")] == ["🌐 Planning\n\nBudget."] * 2

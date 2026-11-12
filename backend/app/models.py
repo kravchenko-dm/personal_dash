@@ -384,5 +384,8 @@ class MediaJob(Base):
     text: Mapped[str] = mapped_column(Text, default="")
     segments: Mapped[list] = mapped_column(JSON, default=list)  # [[start, end, text], ...]
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary_title: Mapped[str] = mapped_column(String(300), default="")  # the LLM's title, in Russian
     proposed_tasks: Mapped[list] = mapped_column(JSON, default=list)
     cost_rub: Mapped[float] = mapped_column(Float, default=0)
+    # cached translations: {"lines:en": [...per segment...], "summary:en": {"title": ..., "text": ...}}
+    translations: Mapped[dict] = mapped_column(JSON, default=dict)

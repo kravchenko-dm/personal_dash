@@ -30,6 +30,9 @@ _LANG_STEMS = {
 }  # fmt: skip
 
 
+SUMMARY_LANG = "ru"  # summaries are always written in Russian
+
+
 def lang_name(code: str) -> str:
     return LANGS.get(code, (code or "?", f"на {code}"))[0]
 
@@ -53,7 +56,11 @@ def default_target(source_lang: str) -> str:
 
 SUMMARY_PROMPT = """Ты делаешь конспект аудиозаписи или видео по расшифровке (как Plaud или Otter).
 Расшифровка автоматическая: в ней бывают ошибки распознавания, повторы и слова-паразиты — молча
-исправляй очевидное, не выдумывай того, чего нет. Пиши по-русски, даже если запись на другом языке.
+исправляй очевидное, не выдумывай того, чего нет.
+
+ВСЕ поля ответа (title, summary, key_points, decisions, chapters, proposed_tasks) пиши ТОЛЬКО на
+русском языке, даже если запись на украинском, английском или любом другом языке: переводи смысл,
+имена собственные передавай в русском написании.
 
 Определи жанр (встреча, звонок, лекция, интервью, видеоролик, голосовая заметка) и пиши под него:
 - summary: суть в 3–8 предложениях — о чём запись и к чему пришли;
@@ -143,6 +150,7 @@ async def summarize(
         + (f"Пожелание пользователя: {instruction}\n" if instruction else "")
         + f"\n## Расшифровка\n{text}"
     )
+    user += "\n\n(Напоминание: весь ответ — на русском языке.)"
     llm = get_llm()
     data = await llm.complete_json(SUMMARY_PROMPT, user, SUMMARY_SCHEMA)
     try:
@@ -212,3 +220,26 @@ async def translate(segments: list[list], target: str, progress: media.Progress 
 
     parts = await asyncio.gather(*(one(a, b) for a, b in batches))
     return [line for part in parts for line in part]
+
+
+SUMMARY_TR_PROMPT = """Переведи заголовок и конспект записи {target}. Сохрани структуру: абзацы, заголовки
+разделов, маркеры «•», таймкоды и переносы строк. Ничего не добавляй и не сокращай."""
+
+SUMMARY_TR_SCHEMA = {
+    "type": "object",
+    "properties": {"title": {"type": "string"}, "text": {"type": "string"}},
+    "required": ["title", "text"],
+    "additionalProperties": False,
+}
+
+
+async def translate_summary(title: str, text: str, target: str) -> dict:
+    llm = get_llm()
+    data = await llm.complete_json(
+        SUMMARY_TR_PROMPT.format(target=LANGS.get(target, ("", f"на язык {target}"))[1]),
+        f"Заголовок: {title}\n\nКонспект:\n{text}",
+        SUMMARY_TR_SCHEMA,
+    )
+    if not str(data.get("text") or "").strip():
+        raise LLMError("пустой перевод выжимки")
+    return {"title": str(data.get("title") or title).strip(), "text": str(data["text"]).strip()}
