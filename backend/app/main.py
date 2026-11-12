@@ -23,7 +23,7 @@ from app.routers import (
     telegram,
     yougile,
 )
-from app.services import scheduler, security, telegram_bot
+from app.services import bot_access, scheduler, security, telegram_bot
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 # chatty third-party loggers: one line per job run / HTTP request / Apple icalendar quirk
@@ -60,6 +60,7 @@ async def lifespan(app: FastAPI):
     await init_db()
     async with SessionLocal() as db:
         await security.load_epoch(db)
+        await bot_access.load(db)
     try:
         await telegram_bot.setup()
     except Exception as exc:

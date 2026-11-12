@@ -5,6 +5,7 @@ sees everything), and the owner can ask for a summary with proposed tasks.
 """
 
 import logging
+import re
 from datetime import datetime, timezone
 
 from aiogram import Bot, Dispatcher, F, Router
@@ -23,6 +24,7 @@ from app.config import get_settings
 from app.db import SessionLocal
 from app.models import Feature, Summary, Task, TelegramChat, TelegramMessage
 from app.schemas import TaskIn
+from app.services import bot_access
 from app.services import summaries as summaries_svc
 from app.services.tasks import create_task, open_tasks_text
 
@@ -43,8 +45,7 @@ def bot_username() -> str | None:
 
 
 def is_owner(user_id: int | None) -> bool:
-    owner = get_settings().telegram_owner_id
-    return owner is None or user_id == owner
+    return bot_access.is_owner(user_id)
 
 
 # ---------- helpers ----------
@@ -93,21 +94,91 @@ def _summary_text(summary: Summary) -> str:
 # ---------- commands ----------
 
 
+GUEST_HELP = (
+    "Пришлите голосовое, кружок, аудио- или видеофайл либо ссылку (YouTube, VK, Rutube, Яндекс.Диск, "
+    "Google Диск) — расшифрую, сделаю выжимку, по кнопке переведу и сделаю субтитры.\n"
+    "В подписи можно написать пожелание, например «переведи на английский». Файлы — до 20 МБ, "
+    "больше — ссылкой на диск."
+)
+
+
+def _who(user) -> str:
+    name = user.full_name if user else "?"
+    return (
+        f"{name} (@{user.username}, id {user.id})"
+        if user and user.username
+        else f"{name} (id {user.id if user else '?'})"
+    )
+
+
 @router.message(Command("start", "help"))
 async def cmd_start(message: Message) -> None:
-    await _ensure_chat(message.chat.id, _chat_title(message), message.chat.type)
-    await message.answer(
-        "Привет! Я собираю сообщения из чатов, куда меня добавили, и делаю саммари с идеями задач.\n\n"
-        "/summary [часов] — саммари этого чата (по умолчанию 24ч)\n"
-        "/digest [часов] — саммари по всем чатам\n"
-        "/tasks — открытые задачи\n"
-        "/add текст — добавить задачу\n"
-        "/done id — закрыть задачу\n"
-        "\nВ личке пришлите голосовое, аудио, видео или ссылку (YouTube, VK, Rutube, Яндекс.Диск) — "
-        "расшифрую, сделаю выжимку и предложу задачи. В подписи можно написать пожелание, "
-        "например «переведи на английский».\n"
-        f"\nВаш user id: {message.from_user.id if message.from_user else '?'}"
-    )
+    user = message.from_user
+    uid = user.id if user else None
+    if is_owner(uid):
+        await _ensure_chat(message.chat.id, _chat_title(message), message.chat.type)
+        await message.answer(
+            "Привет! Я собираю сообщения из чатов, куда вы меня добавили, и делаю саммари с идеями задач.\n\n"
+            "/summary [часов] — саммари этого чата (по умолчанию 24ч)\n"
+            "/digest [часов] — саммари по всем чатам\n"
+            "/tasks — открытые задачи\n"
+            "/add текст — добавить задачу\n"
+            "/done id — закрыть задачу\n"
+            "\nВ личке пришлите голосовое, аудио, видео или ссылку (YouTube, VK, Rutube, Яндекс.Диск) — "
+            "расшифрую, сделаю выжимку и предложу задачи. В подписи можно написать пожелание, "
+            "например «переведи на английский».\n"
+            f"\nВаш user id: {uid}"
+        )
+        return
+    if message.chat.type != ChatType.PRIVATE:
+        return  # strangers in groups get no answer at all
+    if bot_access.is_guest(uid):
+        await message.answer(GUEST_HELP)
+        return
+    if user and bot_access.should_ask_owner(user.id):
+        await send_to_owner(
+            f"👤 Просит доступ к боту: {_who(user)}\nГостю будет доступна только расшифровка своих записей "
+            "(распознавание — за ваш счёт).",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(text="✅ Разрешить", callback_data=f"acc:yes:{user.id}"),
+                        InlineKeyboardButton(text="🚫 Отклонить", callback_data=f"acc:no:{user.id}"),
+                    ]
+                ]
+            ),
+        )
+    await message.answer("Это личный бот. Я отправил владельцу запрос на доступ — напишу, когда он ответит.")
+
+
+@router.callback_query(F.data.startswith("acc:"))
+async def cb_access(query: CallbackQuery) -> None:
+    if not is_owner(query.from_user.id):
+        await query.answer("Только владелец", show_alert=True)
+        return
+    _, verdict, raw_id = query.data.split(":")
+    user_id = int(raw_id)
+    request_text = (query.message.text or "") if query.message else ""
+    if verdict == "yes":
+        name, username = "", ""
+        m = re.search(r"доступ к боту: (.+?) \((?:@(\w+), )?id \d+\)", request_text)
+        if m:
+            name, username = m.group(1), m.group(2) or ""
+        async with SessionLocal() as db:
+            await bot_access.add(db, user_id, name, username)
+        try:
+            await query.bot.send_message(user_id, "✅ Доступ открыт.\n\n" + GUEST_HELP)
+        except Exception as exc:
+            log.warning("guest notify failed: %s", exc)
+        note = "\n\n✅ Доступ выдан. Убрать — «Ещё → Пользователи бота»."
+    else:
+        note = "\n\n🚫 Отклонено."
+    await query.answer()
+    if query.message:
+        try:
+            await query.message.edit_text(request_text.split("\n\n")[0] + note)
+        except Exception:
+            pass
 
 
 @router.message(Command("tasks"))
@@ -244,6 +315,19 @@ async def cb_add_feature(query: CallbackQuery) -> None:
 @router.my_chat_member()
 async def on_membership(event: ChatMemberUpdated) -> None:
     status = event.new_chat_member.status
+    joined = status in ("member", "administrator") and event.old_chat_member.status in ("left", "kicked")
+    if event.chat.type == ChatType.PRIVATE:
+        return  # a user started or blocked the bot: nothing to collect
+    if joined and not is_owner(event.from_user.id if event.from_user else None):
+        try:
+            await event.bot.leave_chat(event.chat.id)
+        except Exception as exc:
+            log.warning("leave_chat failed: %s", exc)
+        await send_to_owner(
+            f"🚪 Меня добавили в группу «{event.chat.title or event.chat.id}» — {_who(event.from_user)}. "
+            "Это не вы, поэтому я вышел. Добавьте меня сами, если группа нужна."
+        )
+        return
     async with SessionLocal() as db:
         chat = await db.scalar(select(TelegramChat).where(TelegramChat.chat_id == event.chat.id))
         if status in ("member", "administrator"):
@@ -251,11 +335,21 @@ async def on_membership(event: ChatMemberUpdated) -> None:
                 db.add(
                     TelegramChat(chat_id=event.chat.id, title=event.chat.title or "", kind=event.chat.type)
                 )
-            else:
+            elif joined:
                 chat.collect = True
         elif chat:
             chat.collect = False
         await db.commit()
+
+
+@router.message(F.migrate_to_chat_id)
+async def on_migrate(message: Message) -> None:
+    """A group became a supergroup and got a new id: keep collecting under the new id."""
+    async with SessionLocal() as db:
+        chat = await db.scalar(select(TelegramChat).where(TelegramChat.chat_id == message.chat.id))
+        if chat:
+            chat.chat_id = message.migrate_to_chat_id
+            await db.commit()
 
 
 @router.message(F.text | F.caption)
@@ -263,7 +357,20 @@ async def collect(message: Message) -> None:
     text = message.text or message.caption or ""
     if not text or text.startswith("/"):
         return
-    chat = await _ensure_chat(message.chat.id, _chat_title(message), message.chat.type)
+    uid = message.from_user.id if message.from_user else None
+    if message.chat.type == ChatType.PRIVATE:
+        if not is_owner(uid):  # strangers' and guests' private chats are never stored
+            await message.answer(
+                GUEST_HELP if bot_access.is_guest(uid) else "Это личный бот. /start — запросить доступ."
+            )
+            return
+        chat = await _ensure_chat(message.chat.id, _chat_title(message), message.chat.type)
+    else:
+        # groups are stored only after the owner added the bot (on_membership)
+        async with SessionLocal() as db:
+            chat = await db.scalar(select(TelegramChat).where(TelegramChat.chat_id == message.chat.id))
+        if chat is None:
+            return
     if not chat.collect:
         return
     sender = message.from_user.full_name if message.from_user else "?"

@@ -29,7 +29,7 @@ from sqlalchemy import delete
 from app.db import SessionLocal
 from app.models import MediaJob
 from app.schemas import TaskIn
-from app.services import media, media_text
+from app.services import bot_access, media, media_text
 from app.services.tasks import create_task
 
 log = logging.getLogger(__name__)
@@ -43,15 +43,11 @@ _tasks: set[asyncio.Task] = set()
 _waiting = 0
 
 
-def _is_owner(user_id: int | None) -> bool:
-    from app.services.telegram_bot import is_owner
+class AllowedPrivate(Filter):
+    """The owner or an approved guest, in a private chat with the bot."""
 
-    return is_owner(user_id)
-
-
-class OwnerPrivate(Filter):
     async def __call__(self, message: Message) -> bool:
-        return message.chat.type == ChatType.PRIVATE and _is_owner(
+        return message.chat.type == ChatType.PRIVATE and bot_access.can_use(
             message.from_user.id if message.from_user else None
         )
 
@@ -110,7 +106,7 @@ class Status:
 # ---------- entry points ----------
 
 
-@router.message(OwnerPrivate(), F.voice | F.audio | F.video | F.video_note | F.document)
+@router.message(AllowedPrivate(), F.voice | F.audio | F.video | F.video_note | F.document)
 async def on_media(message: Message, bot: Bot) -> None:
     found = _media_of(message)
     if not found:
@@ -137,7 +133,7 @@ async def on_media(message: Message, bot: Bot) -> None:
     )  # fmt: skip
 
 
-@router.message(OwnerPrivate(), F.text.regexp(media.URL_RE.pattern), ~F.text.startswith("/"))
+@router.message(AllowedPrivate(), F.text.regexp(media.URL_RE.pattern), ~F.text.startswith("/"))
 async def on_link(message: Message, bot: Bot) -> None:
     url = media.URL_RE.search(message.text).group(0).rstrip(").,")
     instruction = message.text.replace(url, " ").strip()
@@ -261,7 +257,7 @@ def _digest_message(job: MediaJob) -> str:
     head = f"🎙 {job.title}\n{_meta_line(job)}"
     body = job.summary or "Выжимки нет — расшифровка в файле."
     tail = ""
-    if job.proposed_tasks:
+    if job.proposed_tasks and bot_access.is_owner(job.chat_id):
         tail = "\n\n💡 Задачи — нажмите, чтобы добавить:\n" + "\n".join(
             f"• {t['title']} — {t.get('reason', '')}" for t in job.proposed_tasks[:8]
         )
@@ -272,9 +268,10 @@ def _digest_message(job: MediaJob) -> str:
 
 
 def _keyboard(job: MediaJob) -> InlineKeyboardMarkup:
+    tasks = job.proposed_tasks[:8] if bot_access.is_owner(job.chat_id) else []  # guests: no owner's tasks
     rows = [
         [InlineKeyboardButton(text=f"➕ {t['title'][:40]}", callback_data=f"mtask:{job.id}:{i}")]
-        for i, t in enumerate(job.proposed_tasks[:8])
+        for i, t in enumerate(tasks)
     ]
     target = media_text.default_target(job.language)
     rows.append(
@@ -343,21 +340,27 @@ async def _translate(bot: Bot, chat_id: int, job_id: int, target: str) -> None:
 # ---------- buttons ----------
 
 
-async def _owner_job(query: CallbackQuery) -> tuple[MediaJob | None, list[str]]:
-    if not _is_owner(query.from_user.id):
-        await query.answer("Только владелец", show_alert=True)
+async def _job_for(query: CallbackQuery, owner_only: bool = False) -> tuple[MediaJob | None, list[str]]:
+    """The job behind a button; a guest may only touch their own recordings."""
+    uid = query.from_user.id
+    if not (bot_access.is_owner(uid) or (not owner_only and bot_access.is_guest(uid))):
+        await query.answer("Нет доступа", show_alert=True)
         return None, []
     parts = query.data.split(":")
     async with SessionLocal() as db:
         job = await db.get(MediaJob, int(parts[1]))
     if not job:
         await query.answer("Запись уже удалена")
+        return None, parts
+    if not bot_access.is_owner(uid) and job.chat_id != uid:
+        await query.answer("Нет доступа", show_alert=True)
+        return None, parts
     return job, parts
 
 
 @router.callback_query(F.data.startswith("mtask:"))
 async def cb_task(query: CallbackQuery) -> None:
-    job, parts = await _owner_job(query)
+    job, parts = await _job_for(query, owner_only=True)
     if not job:
         return
     idx = int(parts[2])
@@ -381,7 +384,7 @@ async def cb_task(query: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("mtr:"))
 async def cb_translate(query: CallbackQuery, bot: Bot) -> None:
-    job, parts = await _owner_job(query)
+    job, parts = await _job_for(query)
     if not job:
         return
     await query.answer("Перевожу…")
@@ -390,7 +393,7 @@ async def cb_translate(query: CallbackQuery, bot: Bot) -> None:
 
 @router.callback_query(F.data.startswith("msrt:"))
 async def cb_srt(query: CallbackQuery, bot: Bot) -> None:
-    job, _ = await _owner_job(query)
+    job, _ = await _job_for(query)
     if not job:
         return
     await query.answer()

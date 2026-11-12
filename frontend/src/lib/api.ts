@@ -73,6 +73,15 @@ export interface SecurityInfo {
   window_minutes: number;
 }
 
+export interface BotGuest {
+  id: number;
+  name: string;
+  username: string;
+  added_at: string;
+  jobs: number;
+  cost_rub: number;
+}
+
 export type TaskStatus = "todo" | "doing" | "done";
 
 export interface Task {

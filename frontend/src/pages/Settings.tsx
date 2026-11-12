@@ -1,6 +1,17 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { getToken, post, put, setToken, type CalendarAlerts, type SecurityInfo, type Status, type YouGileAlerts } from "../lib/api";
+import {
+  del,
+  getToken,
+  post,
+  put,
+  setToken,
+  type BotGuest,
+  type CalendarAlerts,
+  type SecurityInfo,
+  type Status,
+  type YouGileAlerts,
+} from "../lib/api";
 import { relTime } from "../lib/format";
 import { useFetch } from "../lib/useFetch";
 import { currentSubscription, isStandalone, pushSupported, subscribePush, unsubscribePush } from "../lib/push";
@@ -15,6 +26,9 @@ export default function Settings({ onLogout }: { onLogout: () => void }) {
   const { data: alerts, setData: setAlerts } = useFetch<CalendarAlerts>("/api/calendar/alerts");
   const { data: ygAlerts, setData: setYgAlerts } = useFetch<YouGileAlerts>("/api/yougile/alerts");
   const security = useFetch<SecurityInfo>("/api/auth/events");
+  const guests = useFetch<{ guests: BotGuest[] }>("/api/telegram/guests");
+  const [guestId, setGuestId] = useState("");
+  const [guestName, setGuestName] = useState("");
   const [subscribed, setSubscribed] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
   const toast = useToast();
@@ -63,6 +77,33 @@ export default function Settings({ onLogout }: { onLogout: () => void }) {
       const { token } = await post<{ token: string }>("/api/auth/logout-all");
       setToken(token);
       toast("Все остальные сессии завершены");
+    } catch (e) {
+      toast((e as Error).message, true);
+    }
+  }
+
+  async function addGuest() {
+    const id = Number(guestId.trim());
+    if (!Number.isInteger(id) || id <= 0) {
+      toast("Нужен числовой Telegram id", true);
+      return;
+    }
+    try {
+      await post("/api/telegram/guests", { id, name: guestName.trim() });
+      setGuestId("");
+      setGuestName("");
+      guests.reload();
+      toast("Доступ выдан");
+    } catch (e) {
+      toast((e as Error).message, true);
+    }
+  }
+
+  async function removeGuest(g: BotGuest) {
+    if (!confirm(`Закрыть доступ к боту для ${g.name || g.id}?`)) return;
+    try {
+      await del(`/api/telegram/guests/${g.id}`);
+      guests.reload();
     } catch (e) {
       toast((e as Error).message, true);
     }
@@ -283,6 +324,55 @@ export default function Settings({ onLogout }: { onLogout: () => void }) {
         <button className="btn danger" onClick={logoutAll}>
           Выйти на всех устройствах
         </button>
+      </div>
+
+      <div className="card stack">
+        <h3>Пользователи бота</h3>
+        <p className="small muted">
+          Кроме вас ботом могут пользоваться гости — только для расшифровки своих записей: выжимка, текст, перевод,
+          субтитры. Распознавание идёт за ваш счёт. Задачи, саммари чатов и группы — только ваши; в чужие группы бот
+          не идёт. Новый человек пишет боту /start — вам приходит запрос с кнопками.
+        </p>
+        <div className="stack" style={{ gap: 6 }}>
+          {(guests.data?.guests ?? []).map((g) => (
+            <div key={g.id} className="row between" style={{ gap: 8 }}>
+              <span className="small">
+                {g.name || "без имени"}
+                {g.username && <span className="muted"> @{g.username}</span>}
+                <span className="muted"> · id {g.id}</span>
+                <br />
+                <span className="muted">
+                  с {new Date(g.added_at).toLocaleDateString("ru-RU")} · записей: {g.jobs}
+                  {g.cost_rub > 0 && ` · ${g.cost_rub.toFixed(2).replace(".", ",")} ₽`}
+                </span>
+              </span>
+              <button className="btn small" onClick={() => removeGuest(g)}>
+                Убрать
+              </button>
+            </div>
+          ))}
+          {guests.data && guests.data.guests.length === 0 && <p className="small muted">Гостей пока нет.</p>}
+        </div>
+        <div className="row wrap" style={{ gap: 6 }}>
+          <input
+            className="input"
+            style={{ flex: "1 1 120px" }}
+            inputMode="numeric"
+            placeholder="Telegram id"
+            value={guestId}
+            onChange={(e) => setGuestId(e.target.value)}
+          />
+          <input
+            className="input"
+            style={{ flex: "2 1 160px" }}
+            placeholder="имя (для себя)"
+            value={guestName}
+            onChange={(e) => setGuestName(e.target.value)}
+          />
+          <button className="btn" onClick={addGuest} disabled={!guestId.trim()}>
+            Добавить
+          </button>
+        </div>
       </div>
 
       <div className="card stack">
