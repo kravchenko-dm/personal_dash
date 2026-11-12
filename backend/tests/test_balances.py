@@ -95,7 +95,9 @@ async def test_vdsina_provider(monkeypatch):
         seen.append((request.url.host, request.headers["Authorization"]))
         if request.headers["Authorization"] == "tok":
             return httpx.Response(401, json={"status": "error"})
-        return httpx.Response(200, json={"status": "ok", "data": {"real": "150.50", "bonus": "10", "partner": "0"}})
+        return httpx.Response(
+            200, json={"status": "ok", "data": {"real": "150.50", "bonus": "10", "partner": "0"}}
+        )
 
     real = httpx.AsyncClient
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
@@ -112,7 +114,10 @@ async def test_clo_provider(monkeypatch):
     from app.integrations.providers.clo import CloProvider
 
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url == "https://api.clo.ru/v2/balance" and request.headers["Authorization"] == "Bearer jwt"
+        assert (
+            request.url == "https://api.clo.ru/v2/balance"
+            and request.headers["Authorization"] == "Bearer jwt"
+        )
         return httpx.Response(
             200,
             json={
@@ -164,14 +169,20 @@ async def test_smm_panel_provider(monkeypatch):
         assert request.url.params["action"] == "balance"
         return httpx.Response(200, json={"balance": "12,5", "currency": "RUB"})
 
-    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler2), **kw))
+    monkeypatch.setattr(
+        httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler2), **kw)
+    )
     result = await SmmPanelProvider().fetch({"api_url": "https://panel.test/api/v2", "api_key": "k"})
     assert result.value == 12.5 and result.currency == "RUB"
 
     # wrong key: the panel's error message is surfaced
     monkeypatch.setattr(
-        httpx, "AsyncClient",
-        lambda **kw: real(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"error": "Invalid API key"})), **kw),
+        httpx,
+        "AsyncClient",
+        lambda **kw: real(
+            transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"error": "Invalid API key"})),
+            **kw,
+        ),
     )
     with pytest.raises(ValueError, match="Invalid API key"):
         await SmmPanelProvider().fetch({"api_url": "https://panel.test/api/v2", "api_key": "bad"})
@@ -190,7 +201,9 @@ async def test_subgram_provider(monkeypatch):
                 "status": "ok",
                 "code": 200,
                 "balance": 1532.4,
-                "bots_info": [{"bot_id": 1, "bot_username": "my_bot", "total_followers": 120, "revenue": 532.4}],
+                "bots_info": [
+                    {"bot_id": 1, "bot_username": "my_bot", "total_followers": 120, "revenue": 532.4}
+                ],
             },
         )
 
@@ -209,7 +222,10 @@ async def test_cheatbot_provider(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.host == "api.cheatbot.ru" and request.url.path == "/pb/profile/info"
         if request.url.params.get("access-token") != "k1":
-            return httpx.Response(401, json={"name": "Unauthorized", "message": "Your request was made with invalid credentials."})
+            return httpx.Response(
+                401,
+                json={"name": "Unauthorized", "message": "Your request was made with invalid credentials."},
+            )
         return httpx.Response(200, json={"balance": 250.75, "email": "me@example.com", "activeTask": 2})
 
     real = httpx.AsyncClient
@@ -226,7 +242,9 @@ async def test_polza_provider(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "GET" and request.url == "https://polza.ai/api/v2/balance"
         if request.headers["Authorization"] != "Bearer pk":
-            return httpx.Response(401, json={"error": {"code": "unauthorized", "message": "Invalid API key"}, "trace_id": "t"})
+            return httpx.Response(
+                401, json={"error": {"code": "unauthorized", "message": "Invalid API key"}, "trace_id": "t"}
+            )
         return httpx.Response(
             200,
             json={
@@ -245,3 +263,31 @@ async def test_polza_provider(monkeypatch):
     assert result.extra["available"] == 1200.06 and result.extra["spent_total"] == 845.3
     with pytest.raises(ValueError, match="Invalid API key"):
         await PolzaProvider().fetch({"api_key": "bad"})
+
+
+async def test_hikerapi_provider_money_or_requests(monkeypatch, client, auth):
+    from app.integrations.providers.hikerapi import HikerApiProvider
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.headers.get("x-access-key") != "k":
+            return httpx.Response(401, json={"detail": "Invalid access key"})
+        assert request.url.path == "/sys/balance"
+        return httpx.Response(
+            200, json={"requests": 129627, "rate": 11, "currency": "USD", "amount": 25.8977}
+        )
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    money = await HikerApiProvider().fetch({"api_key": " k "})
+    assert (money.value, money.currency, money.extra["requests"]) == (25.9, "USD", 129627)
+    reqs = await HikerApiProvider().fetch({"api_key": "k", "show": "requests"})
+    assert (reqs.value, reqs.currency, reqs.extra["amount"]) == (129627, "запр.", 25.8977)
+    with pytest.raises(ValueError, match="Invalid access key"):
+        await HikerApiProvider().fetch({"api_key": "bad"})
+
+    info = next(
+        p
+        for p in (await client.get("/api/balances/providers", headers=auth)).json()
+        if p["key"] == "hikerapi"
+    )
+    assert info["fields"][1]["kind"] == "select" and info["fields"][1]["options"][0] == ["usd", "Деньги, USD"]

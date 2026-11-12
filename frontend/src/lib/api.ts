@@ -101,7 +101,8 @@ export interface Task {
 export interface ProviderField {
   key: string;
   label: string;
-  kind: "text" | "secret" | "number" | "url";
+  kind: "text" | "secret" | "number" | "url" | "select";
+  options?: [string, string][];
   required: boolean;
   placeholder: string;
   help: string;

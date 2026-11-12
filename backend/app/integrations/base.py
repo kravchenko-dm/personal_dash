@@ -13,10 +13,11 @@ class BalanceResult:
 class ProviderField:
     key: str
     label: str
-    kind: str = "text"  # text | secret | number | url
+    kind: str = "text"  # text | secret | number | url | select
     required: bool = True
     placeholder: str = ""
     help: str = ""
+    options: list[list[str]] = field(default_factory=list)  # select: [[value, label], ...]
 
     def as_dict(self) -> dict[str, Any]:
         return self.__dict__

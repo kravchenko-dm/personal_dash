@@ -100,6 +100,14 @@ function AccountForm({
             </span>
             {f.key === "headers" ? (
               <textarea className="input" value={config[f.key] ?? ""} placeholder={f.placeholder} onChange={(e) => setConfig({ ...config, [f.key]: e.target.value })} />
+            ) : f.kind === "select" ? (
+              <select className="input" value={config[f.key] ?? f.options?.[0]?.[0] ?? ""} onChange={(e) => setConfig({ ...config, [f.key]: e.target.value })}>
+                {f.options?.map(([value, label]) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </select>
             ) : (
               <input
                 className="input"
