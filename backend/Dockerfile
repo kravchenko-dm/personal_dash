@@ -3,6 +3,10 @@ FROM python:3.12-slim
 WORKDIR /app
 ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 
+# ffmpeg: cut audio out of videos and into chunks for speech-to-text (bot transcription)
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY backend/pyproject.toml ./
 RUN pip install --upgrade pip && pip install .
 

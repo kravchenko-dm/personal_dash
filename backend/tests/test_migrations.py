@@ -65,7 +65,9 @@ def test_legacy_create_all_database_gets_stamped(tmp_path):
         get_settings.cache_clear()
     sync_engine = create_engine(f"sqlite:///{path}")
     names = inspect(sync_engine).get_table_names()
-    assert "alembic_version" in names and "login_events" in names  # stamped 0001, upgraded to head
+    assert (
+        "alembic_version" in names and "login_events" in names and "media_jobs" in names
+    )  # stamped 0001, upgraded to head
     with sync_engine.connect() as conn:
-        assert conn.exec_driver_sql("SELECT version_num FROM alembic_version").scalar() == "0003"
+        assert conn.exec_driver_sql("SELECT version_num FROM alembic_version").scalar() == "0004"
     sync_engine.dispose()

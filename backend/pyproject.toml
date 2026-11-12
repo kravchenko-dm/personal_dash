@@ -23,6 +23,7 @@ dependencies = [
     "caldav>=1.3",
     "icalendar>=5",
     "alembic>=1.13",
+    "yt-dlp[default]>=2026.10",  # upgrades itself at runtime when a site breaks it (services/media.py)
 ]
 
 [project.optional-dependencies]

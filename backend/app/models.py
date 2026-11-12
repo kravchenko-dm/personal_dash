@@ -366,3 +366,23 @@ class LoginEvent(Base):
     ip: Mapped[str] = mapped_column(String(64), index=True)
     user_agent: Mapped[str | None] = mapped_column(String(300), nullable=True)
     result: Mapped[str] = mapped_column(String(12))  # ok | failed | blocked
+
+
+class MediaJob(Base):
+    """A transcribed voice note, audio/video file or link (YouTube etc.) sent to the bot."""
+
+    __tablename__ = "media_jobs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    source: Mapped[str] = mapped_column(String(500))  # URL or "telegram:<kind>"
+    title: Mapped[str] = mapped_column(String(300), default="")
+    language: Mapped[str] = mapped_column(String(10), default="")
+    duration: Mapped[float] = mapped_column(Float, default=0)
+    stt_model: Mapped[str] = mapped_column(String(60), default="")
+    text: Mapped[str] = mapped_column(Text, default="")
+    segments: Mapped[list] = mapped_column(JSON, default=list)  # [[start, end, text], ...]
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    proposed_tasks: Mapped[list] = mapped_column(JSON, default=list)
+    cost_rub: Mapped[float] = mapped_column(Float, default=0)

@@ -103,6 +103,9 @@ async def cmd_start(message: Message) -> None:
         "/tasks — открытые задачи\n"
         "/add текст — добавить задачу\n"
         "/done id — закрыть задачу\n"
+        "\nВ личке пришлите голосовое, аудио, видео или ссылку (YouTube, VK, Rutube, Яндекс.Диск) — "
+        "расшифрую, сделаю выжимку и предложу задачи. В подписи можно написать пожелание, "
+        "например «переведи на английский».\n"
         f"\nВаш user id: {message.from_user.id if message.from_user else '?'}"
     )
 
@@ -289,6 +292,9 @@ async def setup() -> None:
         return
     _bot = Bot(token=s.telegram_bot_token)
     _dp = Dispatcher()
+    from app.services import telegram_media
+
+    _dp.include_router(telegram_media.router)  # first: links in the private chat must not be "collected"
     _dp.include_router(router)
     me = await _bot.get_me()
     _bot_username = me.username

@@ -36,6 +36,13 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     claude_model: str = "claude-opus-5-5"
 
+    # Speech-to-text for the bot (voice notes, audio/video files, YouTube links). Polza.AI only:
+    # the key defaults to LLM_API_KEY when LLM_PROVIDER=polza. whisper-1 gives timecodes (subtitles);
+    # the fallback is used when the main model fails.
+    stt_api_key: str = ""
+    stt_model: str = "openai/whisper-1"
+    stt_fallback_model: str = "openai/whisper-large-v3-turbo"
+
     google_client_id: str = ""
     google_client_secret: str = ""
 
@@ -63,6 +70,12 @@ class Settings(BaseSettings):
     @property
     def telegram_enabled(self) -> bool:
         return bool(self.telegram_bot_token)
+
+    @property
+    def stt_key(self) -> str:
+        if self.stt_api_key:
+            return self.stt_api_key
+        return self.llm_api_key if self.llm_provider.lower() == "polza" else ""
 
     @property
     def push_enabled(self) -> bool:
