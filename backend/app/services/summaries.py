@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Project, Summary, TelegramChat, TelegramMessage
+from app.models import OWNER_ID, Project, Summary, TelegramChat, TelegramMessage
 from app.services import agenda, apple_reminders, summarizer
 from app.services import projects as projects_svc
 from app.services.tasks import open_tasks_text
@@ -15,19 +15,16 @@ log = logging.getLogger(__name__)
 MAX_CHARS = 120_000  # ~30k tokens of chat text per summary request
 
 
-async def _messages_text(
-    db: AsyncSession, chat_ids: list[int] | None, since: datetime, until: datetime
-) -> str:
+async def _messages_text(db: AsyncSession, chat_ids: list[int], since: datetime, until: datetime) -> str:
+    if not chat_ids:
+        return ""
     chats = {c.chat_id: c for c in (await db.scalars(select(TelegramChat))).all()}
     stmt = (
         select(TelegramMessage)
         .where(TelegramMessage.sent_at >= since, TelegramMessage.sent_at < until)
+        .where(TelegramMessage.chat_id.in_(chat_ids))
         .order_by(TelegramMessage.chat_id, TelegramMessage.sent_at)
     )
-    if chat_ids is not None:
-        if not chat_ids:
-            return ""
-        stmt = stmt.where(TelegramMessage.chat_id.in_(chat_ids))
     rows = list((await db.scalars(stmt)).all())
     lines: list[str] = []
     current: int | None = None
@@ -50,19 +47,30 @@ async def build_summary(
     hours: int = 24,
     mark_summarized: bool = False,
     project_id: int | None = None,
+    user_id: int = OWNER_ID,
 ) -> Summary | None:
-    """Summarize one chat, all chats, or all chats bound to a project. When the chat belongs to a
-    project (or project_id is given) the prompt gets the project's description and open features
-    so the model proposes features for the board instead of generic tasks."""
+    """Summarize one chat, all of a user's chats, or all chats bound to a project (owner only). When the
+    chat belongs to a project (or project_id is given) the prompt gets the project's description and
+    open features so the model proposes features for the board instead of generic tasks. Apple
+    reminders, the calendar and projects are the owner's: members get only their chats and tasks."""
     until = datetime.now(timezone.utc)
     since = until - timedelta(hours=hours)
+    is_owner = user_id == OWNER_ID
+    if not is_owner:
+        project_id = None
+    own = [
+        c.chat_id
+        for c in (await db.scalars(select(TelegramChat).where(TelegramChat.user_id == user_id))).all()
+    ]
 
     project: Project | None = None
     chat_ids: list[int] | None = None
     if chat_id is not None:
+        if chat_id not in own:
+            raise RuntimeError("Чат не найден")
         chat_ids = [chat_id]
         chat = await db.scalar(select(TelegramChat).where(TelegramChat.chat_id == chat_id))
-        if chat and chat.project_id and project_id is None:
+        if is_owner and chat and chat.project_id and project_id is None:
             project_id = chat.project_id
     if project_id is not None:
         project = await db.get(Project, project_id)
@@ -70,12 +78,14 @@ async def build_summary(
             raise RuntimeError("Проект не найден")
         if chat_ids is None:
             chat_ids = [c.chat_id for c in await projects_svc.chats_for_project(db, project_id)]
+    if chat_ids is None:
+        chat_ids = own
 
     text = await _messages_text(db, chat_ids, since, until)
     if not text:
         return None
 
-    tasks = await open_tasks_text(db)
+    tasks = await open_tasks_text(db, user_id)
     if project is not None:
         features = projects_svc.open_features_text(await projects_svc.project_features(db, project.id))
         tasks = (
@@ -83,19 +93,21 @@ async def build_summary(
             f"Текущий статус: {project.status_note or 'не указан'}\n\n"
             f"## Фичи проекта на доске\n{features}\n\n## Открытые задачи\n{tasks}"
         )
-    reminders = apple_reminders.reminders_text(await apple_reminders.list_reminders(db))
-    if reminders:
-        tasks += f"\n\nНапоминания Apple:\n{reminders}"
     calendar_text = ""
-    try:
-        calendar_text = await agenda.upcoming_text(db, days=3)
-    except Exception as exc:
-        log.info("calendar unavailable for summary: %s", exc)
+    if is_owner:
+        reminders = apple_reminders.reminders_text(await apple_reminders.list_reminders(db))
+        if reminders:
+            tasks += f"\n\nНапоминания Apple:\n{reminders}"
+        try:
+            calendar_text = await agenda.upcoming_text(db, days=3)
+        except Exception as exc:
+            log.info("calendar unavailable for summary: %s", exc)
 
     label = f"{since.astimezone():%d.%m %H:%M} — {until.astimezone():%d.%m %H:%M}"
     result = await summarizer.summarize(text, tasks, calendar_text, label)
 
     row = Summary(
+        user_id=user_id,
         chat_id=chat_id,
         project_id=project.id if project else None,
         period_start=since,
@@ -110,9 +122,7 @@ async def build_summary(
             .where(TelegramMessage.sent_at >= since, TelegramMessage.sent_at < until)
             .values(summarized=True)
         )
-        if chat_ids is not None:
-            stmt = stmt.where(TelegramMessage.chat_id.in_(chat_ids))
-        await db.execute(stmt)
+        await db.execute(stmt.where(TelegramMessage.chat_id.in_(chat_ids)))
     await db.commit()
     await db.refresh(row)
     return row

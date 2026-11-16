@@ -48,7 +48,7 @@ def fake(monkeypatch):
     monkeypatch.setattr(agenda, "events", events)
     monkeypatch.setattr(agenda, "connected", connected)
     monkeypatch.setattr(agenda, "sources", sources)
-    monkeypatch.setattr(push, "notify_all", notify_all)
+    monkeypatch.setattr(push, "notify_owner", notify_all)
     monkeypatch.setattr(telegram_bot, "send_to_owner", send_to_owner)
     return world
 

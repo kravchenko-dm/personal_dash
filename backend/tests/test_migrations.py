@@ -69,5 +69,33 @@ def test_legacy_create_all_database_gets_stamped(tmp_path):
         "alembic_version" in names and "login_events" in names and "media_jobs" in names
     )  # stamped 0001, upgraded to head
     with sync_engine.connect() as conn:
-        assert conn.exec_driver_sql("SELECT version_num FROM alembic_version").scalar() == "0006"
+        assert conn.exec_driver_sql("SELECT version_num FROM alembic_version").scalar() == "0007"
+    sync_engine.dispose()
+
+
+def test_0007_moves_bot_guests_into_users(tmp_path):
+    from sqlalchemy import create_engine
+
+    path = tmp_path / "guests.db"
+    url = f"sqlite+aiosqlite:///{path}"
+    command.upgrade(alembic_config(url), "0006")
+    sync_engine = create_engine(f"sqlite:///{path}")
+    with sync_engine.begin() as conn:
+        conn.exec_driver_sql(
+            "INSERT INTO settings (key, value) VALUES ('telegram.guests', "
+            '\'{"guests": [{"id": 200, "name": "Пётр", "username": "petr", "added_at": "x"}]}\')'
+        )
+        conn.exec_driver_sql("INSERT INTO tasks (title, status, priority, source, created_at, updated_at) "
+                             "VALUES ('t', 'todo', 2, 'manual', '2026-01-01', '2026-01-01')")  # fmt: skip
+    sync_engine.dispose()
+    command.upgrade(alembic_config(url), "head")
+    sync_engine = create_engine(f"sqlite:///{path}")
+    with sync_engine.connect() as conn:
+        users = conn.exec_driver_sql("SELECT id, telegram_id, name, role, level FROM users ORDER BY id").all()
+        assert [tuple(u) for u in users] == [
+            (1, None, "", "owner", "workspace"),
+            (2, 200, "Пётр", "member", "media"),
+        ]
+        assert conn.exec_driver_sql("SELECT user_id FROM tasks").scalar() == 1
+        assert conn.exec_driver_sql("SELECT count(*) FROM settings WHERE key='telegram.guests'").scalar() == 0
     sync_engine.dispose()

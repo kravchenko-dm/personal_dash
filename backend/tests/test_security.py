@@ -23,7 +23,7 @@ def alerts(monkeypatch):
     async def send_to_owner(text, reply_markup=None):
         pass
 
-    monkeypatch.setattr(push, "notify_all", notify_all)
+    monkeypatch.setattr(push, "notify_owner", notify_all)
     monkeypatch.setattr(telegram_bot, "send_to_owner", send_to_owner)
     yield sent
     auth_mod.set_token_epoch(0)

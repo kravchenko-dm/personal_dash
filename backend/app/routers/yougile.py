@@ -5,12 +5,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import require_auth
+from app.auth import require_owner
 from app.db import get_db
 from app.services import yougile as svc
 from app.services import yougile_alerts
 
-router = APIRouter(prefix="/api/yougile", tags=["yougile"], dependencies=[Depends(require_auth)])
+router = APIRouter(prefix="/api/yougile", tags=["yougile"], dependencies=[Depends(require_owner)])
 
 
 class TaskPatch(BaseModel):

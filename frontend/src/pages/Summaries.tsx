@@ -3,11 +3,13 @@ import { del, patch, post, put, type Project, type Summary, type TelegramChat } 
 import { useFetch } from "../lib/useFetch";
 import { fmtDate } from "../lib/format";
 import { useToast } from "../components/Toast";
+import { useIsOwner } from "../lib/me";
 
 export default function Summaries() {
+  const owner = useIsOwner();
   const summaries = useFetch<Summary[]>("/api/summaries");
   const chats = useFetch<TelegramChat[]>("/api/telegram/chats");
-  const projects = useFetch<Project[]>("/api/projects");
+  const projects = useFetch<Project[]>(owner ? "/api/projects" : null);
   const [chatId, setChatId] = useState<string>("");
   const [hours, setHours] = useState(24);
   const [busy, setBusy] = useState(false);
@@ -102,20 +104,25 @@ export default function Summaries() {
               <span style={{ flex: 1 }}>
                 {c.title} <span className="chip">{c.kind}</span>
               </span>
-              <select className="input" style={{ width: 150, minHeight: 32, padding: "4px 8px" }} value={c.project_id ?? ""} onChange={(e) => bindChat(c, e.target.value)}>
-                <option value="">— проект —</option>
-                {(projects.data ?? []).map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </select>
+              {owner && (
+                <select className="input" style={{ width: 150, minHeight: 32, padding: "4px 8px" }} value={c.project_id ?? ""} onChange={(e) => bindChat(c, e.target.value)}>
+                  <option value="">— проект —</option>
+                  {(projects.data ?? []).map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
           ))}
         </div>
       )}
       {chats.data && chats.data.length === 0 && (
-        <div className="card muted small">Бот ещё не видел ни одного чата. Напишите ему /start или добавьте в группу.</div>
+        <div className="card muted small">
+          Бот ещё не видел ни одного вашего чата. Напишите ему /start или добавьте его в свою группу (добавить должны
+          именно вы).
+        </div>
       )}
       {(summaries.data ?? []).map((s) => (
         <div key={s.id} className="card">

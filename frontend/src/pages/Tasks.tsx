@@ -4,6 +4,7 @@ import { useFetch } from "../lib/useFetch";
 import { fmtDate, isOverdue, relTime, toLocalInput } from "../lib/format";
 import { Modal } from "../components/Modal";
 import { useToast } from "../components/Toast";
+import { useIsOwner } from "../lib/me";
 
 const PRIO = { 1: "🔴 Высокий", 2: "🟡 Обычный", 3: "🟢 Низкий" } as const;
 const SOURCE: Record<string, string> = { manual: "", telegram: "из Telegram", ai: "предложено ИИ", apple: "из Напоминаний Apple" };
@@ -182,6 +183,7 @@ export function AppleReminders({ onImported }: { onImported: (t: Task) => void }
 
 export default function Tasks() {
   const { data, error, loading, setData, reload } = useFetch<Task[]>("/api/tasks");
+  const owner = useIsOwner();
   const [filter, setFilter] = useState<"open" | "doing" | "done" | "all" | "apple">("open");
   const [creating, setCreating] = useState(false);
   const [quick, setQuick] = useState("");
@@ -237,7 +239,7 @@ export default function Tasks() {
             ["all", "Все"],
             ["apple", " Напоминания"]
           ] as const
-        ).map(([k, label]) => (
+        ).filter(([k]) => owner || k !== "apple").map(([k, label]) => (
           <button key={k} className={filter === k ? "active" : ""} onClick={() => setFilter(k)}>
             {label}
           </button>

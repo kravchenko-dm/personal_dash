@@ -3,10 +3,11 @@ import { Link } from "react-router-dom";
 import {
   del,
   getToken,
+  patch,
   post,
   put,
   setToken,
-  type BotGuest,
+  type BotUser,
   type CalendarAlerts,
   type SecurityInfo,
   type Status,
@@ -16,19 +17,20 @@ import { relTime } from "../lib/format";
 import { useFetch } from "../lib/useFetch";
 import { currentSubscription, isStandalone, pushSupported, subscribePush, unsubscribePush } from "../lib/push";
 import { useToast } from "../components/Toast";
+import { useIsOwner, useMe, type Me } from "../lib/me";
 
 function Chip({ on, label }: { on: boolean; label: string }) {
   return <span className={"chip " + (on ? "on" : "off")}>{on ? "●" : "○"} {label}</span>;
 }
 
-export default function Settings({ onLogout }: { onLogout: () => void }) {
+export default function Settings({ onLogout, onMe }: { onLogout: () => void; onMe: (me: Me) => void }) {
+  const me = useMe();
+  const owner = useIsOwner();
+  const only = (path: string) => (owner ? path : null);
   const { data: status } = useFetch<Status>("/api/status");
-  const { data: alerts, setData: setAlerts } = useFetch<CalendarAlerts>("/api/calendar/alerts");
-  const { data: ygAlerts, setData: setYgAlerts } = useFetch<YouGileAlerts>("/api/yougile/alerts");
-  const security = useFetch<SecurityInfo>("/api/auth/events");
-  const guests = useFetch<{ guests: BotGuest[] }>("/api/telegram/guests");
-  const [guestId, setGuestId] = useState("");
-  const [guestName, setGuestName] = useState("");
+  const { data: alerts, setData: setAlerts } = useFetch<CalendarAlerts>(only("/api/calendar/alerts"));
+  const { data: ygAlerts, setData: setYgAlerts } = useFetch<YouGileAlerts>(only("/api/yougile/alerts"));
+  const security = useFetch<SecurityInfo>(only("/api/auth/events"));
   const [subscribed, setSubscribed] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
   const toast = useToast();
@@ -65,45 +67,25 @@ export default function Settings({ onLogout }: { onLogout: () => void }) {
     }
   }
 
+  async function savePrefs(prefs: Partial<Pick<Me, "evening_digest" | "morning_brief">>) {
+    try {
+      onMe(await patch<Me>("/api/auth/me", prefs));
+      toast("Сохранено");
+    } catch (e) {
+      toast((e as Error).message, true);
+    }
+  }
+
   async function logoutAll() {
-    if (
-      !confirm(
-        "Все входы на других устройствах станут недействительны, им придётся ввести пароль заново. " +
-          "Токен в «Командах» на iPhone тоже перестанет работать — скопируйте новый. Продолжить?"
-      )
-    )
-      return;
+    const text = owner
+      ? "Все входы на других устройствах станут недействительны — и ваши, и всех пользователей. " +
+        "Токен в «Командах» на iPhone тоже перестанет работать — скопируйте новый. Продолжить?"
+      : "Все ваши входы на других устройствах станут недействительны. Продолжить?";
+    if (!confirm(text)) return;
     try {
       const { token } = await post<{ token: string }>("/api/auth/logout-all");
       setToken(token);
       toast("Все остальные сессии завершены");
-    } catch (e) {
-      toast((e as Error).message, true);
-    }
-  }
-
-  async function addGuest() {
-    const id = Number(guestId.trim());
-    if (!Number.isInteger(id) || id <= 0) {
-      toast("Нужен числовой Telegram id", true);
-      return;
-    }
-    try {
-      await post("/api/telegram/guests", { id, name: guestName.trim() });
-      setGuestId("");
-      setGuestName("");
-      guests.reload();
-      toast("Доступ выдан");
-    } catch (e) {
-      toast((e as Error).message, true);
-    }
-  }
-
-  async function removeGuest(g: BotGuest) {
-    if (!confirm(`Закрыть доступ к боту для ${g.name || g.id}?`)) return;
-    try {
-      await del(`/api/telegram/guests/${g.id}`);
-      guests.reload();
     } catch (e) {
       toast((e as Error).message, true);
     }
@@ -144,6 +126,8 @@ export default function Settings({ onLogout }: { onLogout: () => void }) {
         <span>📝 Саммари и чаты Telegram</span>
         <span className="muted">›</span>
       </Link>
+      {owner && (
+        <>
       <Link to="/settings/backups" className="card clickable row between" style={{ display: "flex" }}>
         <span>💾 Хранилище бэкапов</span>
         <span className="muted">›</span>
@@ -152,6 +136,8 @@ export default function Settings({ onLogout }: { onLogout: () => void }) {
         <span>🗂 YouGile</span>
         <span className="muted">›</span>
       </Link>
+        </>
+      )}
 
       <div className="card stack">
         <h3>Push-уведомления</h3>
@@ -172,6 +158,29 @@ export default function Settings({ onLogout }: { onLogout: () => void }) {
         </div>
       </div>
 
+      {!owner && (
+        <div className="card stack">
+          <h3>Сообщения от бота</h3>
+          <label className="row" style={{ gap: 8 }}>
+            <input type="checkbox" checked={me.evening_digest} onChange={(e) => savePrefs({ evening_digest: e.target.checked })} />
+            <span>Вечерний дайджест в 21:00 — выжимка по вашим чатам за день</span>
+          </label>
+          <label className="row" style={{ gap: 8 }}>
+            <input type="checkbox" checked={me.morning_brief} onChange={(e) => savePrefs({ morning_brief: e.target.checked })} />
+            <span>Утренний бриф в 08:00 — открытые задачи</span>
+          </label>
+          <p className="small muted">
+            Бот собирает вашу личку с ним и группы, куда вы сами его добавили. В боте: /tasks, /add, /done, /summary,
+            /login — ссылка для входа сюда.
+          </p>
+          <button className="btn danger" onClick={logoutAll}>
+            Выйти на всех устройствах
+          </button>
+        </div>
+      )}
+
+      {owner && (
+        <>
       <div className="card stack">
         <h3>Интеграции</h3>
         {status ? (
@@ -309,6 +318,8 @@ export default function Settings({ onLogout }: { onLogout: () => void }) {
                 <div key={i} className="small row between" style={{ gap: 8 }}>
                   <span>
                     {e.result === "ok" ? "✅" : e.result === "blocked" ? "⛔" : "❌"} {e.ip}
+                    {e.method === "telegram" && " · через бота"}
+                    {e.user && ` · ${e.user}`}
                   </span>
                   <span className="muted" title={e.user_agent ?? ""} style={{ textAlign: "right" }}>
                     {relTime(e.ts)}
@@ -325,56 +336,12 @@ export default function Settings({ onLogout }: { onLogout: () => void }) {
           Выйти на всех устройствах
         </button>
       </div>
+        </>
+      )}
 
-      <div className="card stack">
-        <h3>Пользователи бота</h3>
-        <p className="small muted">
-          Кроме вас ботом могут пользоваться гости — только для расшифровки своих записей: выжимка, текст, перевод,
-          субтитры. Распознавание идёт за ваш счёт. Задачи, саммари чатов и группы — только ваши; в чужие группы бот
-          не идёт. Новый человек пишет боту /start — вам приходит запрос с кнопками.
-        </p>
-        <div className="stack" style={{ gap: 6 }}>
-          {(guests.data?.guests ?? []).map((g) => (
-            <div key={g.id} className="row between" style={{ gap: 8 }}>
-              <span className="small">
-                {g.name || "без имени"}
-                {g.username && <span className="muted"> @{g.username}</span>}
-                <span className="muted"> · id {g.id}</span>
-                <br />
-                <span className="muted">
-                  с {new Date(g.added_at).toLocaleDateString("ru-RU")} · записей: {g.jobs}
-                  {g.cost_rub > 0 && ` · ${g.cost_rub.toFixed(2).replace(".", ",")} ₽`}
-                </span>
-              </span>
-              <button className="btn small" onClick={() => removeGuest(g)}>
-                Убрать
-              </button>
-            </div>
-          ))}
-          {guests.data && guests.data.guests.length === 0 && <p className="small muted">Гостей пока нет.</p>}
-        </div>
-        <div className="row wrap" style={{ gap: 6 }}>
-          <input
-            className="input"
-            style={{ flex: "1 1 120px" }}
-            inputMode="numeric"
-            placeholder="Telegram id"
-            value={guestId}
-            onChange={(e) => setGuestId(e.target.value)}
-          />
-          <input
-            className="input"
-            style={{ flex: "2 1 160px" }}
-            placeholder="имя (для себя)"
-            value={guestName}
-            onChange={(e) => setGuestName(e.target.value)}
-          />
-          <button className="btn" onClick={addGuest} disabled={!guestId.trim()}>
-            Добавить
-          </button>
-        </div>
-      </div>
+      {owner && <UsersCard />}
 
+      {owner && (
       <div className="card stack">
         <h3>Напоминания Apple (Команды на iPhone)</h3>
         <p className="small muted">
@@ -394,6 +361,7 @@ export default function Settings({ onLogout }: { onLogout: () => void }) {
           Токен для Команд
         </button>
       </div>
+      )}
 
       <button className="btn danger" onClick={onLogout}>
         Выйти
@@ -411,6 +379,125 @@ export default function Settings({ onLogout }: { onLogout: () => void }) {
           проверить обновление
         </a>
       </p>
+    </div>
+  );
+}
+
+
+const LEVELS: Record<string, string> = { workspace: "свой кабинет", media: "только расшифровка" };
+
+function UsersCard() {
+  const users = useFetch<{ users: BotUser[] }>("/api/telegram/users");
+  const [tgId, setTgId] = useState("");
+  const [name, setName] = useState("");
+  const [level, setLevel] = useState<"workspace" | "media">("workspace");
+  const toast = useToast();
+
+  async function add() {
+    const id = Number(tgId.trim());
+    if (!Number.isInteger(id) || id <= 0) {
+      toast("Нужен числовой Telegram id", true);
+      return;
+    }
+    try {
+      await post("/api/telegram/users", { telegram_id: id, name: name.trim(), level });
+      setTgId("");
+      setName("");
+      users.reload();
+      toast("Доступ выдан");
+    } catch (e) {
+      toast((e as Error).message, true);
+    }
+  }
+
+  async function changeLevel(u: BotUser, next: string) {
+    try {
+      await patch(`/api/telegram/users/${u.id}`, { level: next });
+      users.reload();
+    } catch (e) {
+      toast((e as Error).message, true);
+    }
+  }
+
+  async function remove(u: BotUser) {
+    if (!confirm(`Удалить ${u.name || u.telegram_id}? Вместе с ним удалятся его задачи, чаты и саммари.`)) return;
+    try {
+      await del(`/api/telegram/users/${u.id}`);
+      users.reload();
+    } catch (e) {
+      toast((e as Error).message, true);
+    }
+  }
+
+  return (
+    <div className="card stack">
+      <h3>Пользователи</h3>
+      <p className="small muted">
+        «Свой кабинет» — свои задачи, сбор своих чатов (личка с ботом и группы, куда человек сам добавил бота),
+        саммари, дайджесты и вход сюда через бота (/login). «Только расшифровка» — расшифровка своих записей.
+        Нейросеть и распознавание — за ваш счёт. Их задачи и переписку вы не видите — только счётчики. Новый
+        человек пишет боту /start — вам приходит запрос с кнопками.
+      </p>
+      <div className="stack" style={{ gap: 8 }}>
+        {(users.data?.users ?? []).map((u) => (
+          <div key={u.id} className="row between" style={{ gap: 8, alignItems: "flex-start" }}>
+            <span className="small" style={{ flex: 1 }}>
+              {u.name || "без имени"}
+              {u.username && <span className="muted"> @{u.username}</span>}
+              <span className="muted"> · id {u.telegram_id}</span>
+              <br />
+              <span className="muted">
+                с {new Date(u.created_at).toLocaleDateString("ru-RU")} · записей: {u.jobs}
+                {u.cost_rub > 0 && ` (${u.cost_rub.toFixed(2).replace(".", ",")} ₽)`}
+                {u.level === "workspace" && ` · чатов: ${u.chats} · саммари: ${u.summaries} · задач: ${u.tasks}`}
+              </span>
+            </span>
+            <select
+              className="input"
+              style={{ width: 150, minHeight: 32, padding: "4px 8px" }}
+              value={u.level}
+              onChange={(e) => changeLevel(u, e.target.value)}
+            >
+              {Object.entries(LEVELS).map(([k, label]) => (
+                <option key={k} value={k}>
+                  {label}
+                </option>
+              ))}
+            </select>
+            <button className="btn small" onClick={() => remove(u)}>
+              ✕
+            </button>
+          </div>
+        ))}
+        {users.data && users.data.users.length === 0 && <p className="small muted">Пользователей пока нет.</p>}
+      </div>
+      <div className="row wrap" style={{ gap: 6 }}>
+        <input
+          className="input"
+          style={{ flex: "1 1 120px" }}
+          inputMode="numeric"
+          placeholder="Telegram id"
+          value={tgId}
+          onChange={(e) => setTgId(e.target.value)}
+        />
+        <input
+          className="input"
+          style={{ flex: "2 1 140px" }}
+          placeholder="имя (для себя)"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+        />
+        <select className="input" style={{ flex: "1 1 140px" }} value={level} onChange={(e) => setLevel(e.target.value as "workspace" | "media")}>
+          {Object.entries(LEVELS).map(([k, label]) => (
+            <option key={k} value={k}>
+              {label}
+            </option>
+          ))}
+        </select>
+        <button className="btn" onClick={add} disabled={!tgId.trim()}>
+          Добавить
+        </button>
+      </div>
     </div>
   );
 }

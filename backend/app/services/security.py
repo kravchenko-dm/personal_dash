@@ -5,12 +5,12 @@ import logging
 import time
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import auth
-from app.models import LoginEvent, Setting
-from app.services import push, telegram_bot
+from app.models import OWNER_ID, LoginEvent, Setting
+from app.services import bot_access, push, telegram_bot
 
 log = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ class Locked(Exception):
 
 async def _alert(db: AsyncSession, text: str) -> None:
     try:
-        await push.notify_all(db, "Безопасность", text, url="/settings", tag="security")
+        await push.notify_owner(db, "Безопасность", text, url="/settings", tag="security")
     except Exception as exc:  # noqa: BLE001
         log.warning("security push failed: %s", exc)
     try:
@@ -54,9 +54,12 @@ async def _count(db: AsyncSession, since: datetime, ip: str | None = None) -> in
     return int(await db.scalar(stmt) or 0)
 
 
-async def attempt(db: AsyncSession, ip: str, user_agent: str | None, password_ok_fn) -> None:
+async def attempt(
+    db: AsyncSession, ip: str, user_agent: str | None, password_ok_fn, method: str = "password"
+) -> int:
     """Record one login attempt. Raises Locked when the IP is locked out, PermissionError on a wrong
-    password; returns normally on success. `password_ok_fn` is only called when the IP may try."""
+    password or code; returns the user id on success. `password_ok_fn` is only called when the IP may
+    try; it returns True (the owner) or a user id, falsy when wrong."""
     now = datetime.now(timezone.utc)
     ua = (user_agent or "")[:300] or None
     fails = await _count(db, now - WINDOW, ip)
@@ -66,13 +69,14 @@ async def attempt(db: AsyncSession, ip: str, user_agent: str | None, password_ok
                 LoginEvent.ip == ip, LoginEvent.result == "failed", LoginEvent.ts >= now - WINDOW
             )
         )
-        db.add(LoginEvent(ts=now, ip=ip, user_agent=ua, result="blocked"))
+        db.add(LoginEvent(ts=now, ip=ip, user_agent=ua, result="blocked", method=method))
         await db.commit()
         oldest = oldest if oldest.tzinfo else oldest.replace(tzinfo=timezone.utc)
         raise Locked(max(60, int((oldest + WINDOW - now).total_seconds())))
 
-    if not password_ok_fn():
-        db.add(LoginEvent(ts=now, ip=ip, user_agent=ua, result="failed"))
+    ok = password_ok_fn()
+    if not ok:
+        db.add(LoginEvent(ts=now, ip=ip, user_agent=ua, result="failed", method=method))
         await db.flush()
         if fails + 1 == MAX_FAILS:
             await _alert(
@@ -88,19 +92,35 @@ async def attempt(db: AsyncSession, ip: str, user_agent: str | None, password_ok
         await db.commit()
         raise PermissionError
 
-    seen_before = await db.scalar(
-        select(func.count()).select_from(LoginEvent).where(LoginEvent.result == "ok", LoginEvent.ip == ip)
+    user_id = OWNER_ID if ok is True else int(ok)
+    who = (
+        or_(
+            LoginEvent.user_id == OWNER_ID, LoginEvent.user_id.is_(None)
+        )  # events before 0007 are the owner's
+        if user_id == OWNER_ID
+        else LoginEvent.user_id == user_id
     )
-    any_ok = await db.scalar(select(func.count()).select_from(LoginEvent).where(LoginEvent.result == "ok"))
-    db.add(LoginEvent(ts=now, ip=ip, user_agent=ua, result="ok"))
+    mine = (LoginEvent.result == "ok", who)
+    seen_before = await db.scalar(
+        select(func.count()).select_from(LoginEvent).where(*mine, LoginEvent.ip == ip)
+    )
+    any_ok = await db.scalar(select(func.count()).select_from(LoginEvent).where(*mine))
+    db.add(LoginEvent(ts=now, ip=ip, user_agent=ua, result="ok", user_id=user_id, method=method))
     await db.execute(delete(LoginEvent).where(LoginEvent.ts < now - KEEP))
     await db.flush()
     if any_ok and not seen_before:
-        await _alert(
-            db,
-            f"🔓 Вход в дашборд с нового адреса {ip}\n{_short_ua(ua)}\nЕсли это не вы — «Ещё → Выйти на всех устройствах» и смените пароль.",
+        text = (
+            f"🔓 Вход в дашборд с нового адреса {ip}\n{_short_ua(ua)}\n"
+            "Если это не вы — «Ещё → Выйти на всех устройствах»"
         )
+        if user_id == OWNER_ID:
+            await _alert(db, text + " и смените пароль.")
+        else:
+            acc = bot_access.get(user_id)
+            if acc and acc.telegram_id:
+                await telegram_bot.send_to_user(acc.telegram_id, text + ".")
     await db.commit()
+    return user_id
 
 
 async def events(db: AsyncSession, limit: int = 30) -> dict:
@@ -121,13 +141,28 @@ async def events(db: AsyncSession, limit: int = 30) -> dict:
     )
     return {
         "events": [
-            {"ts": r.ts.isoformat(), "ip": r.ip, "user_agent": r.user_agent, "result": r.result} for r in rows
+            {
+                "ts": r.ts.isoformat(),
+                "ip": r.ip,
+                "user_agent": r.user_agent,
+                "result": r.result,
+                "method": r.method,
+                "user": _user_label(r.user_id),
+            }
+            for r in rows
         ],
         "failed_24h": failed_24h,
         "locked_ips": list(locked),
         "max_fails": MAX_FAILS,
         "window_minutes": int(WINDOW.total_seconds() // 60),
     }
+
+
+def _user_label(user_id: int | None) -> str:
+    if user_id is None or user_id == OWNER_ID:
+        return ""
+    acc = bot_access.get(user_id)
+    return acc.display if acc else f"#{user_id}"
 
 
 async def load_epoch(db: AsyncSession) -> int:
@@ -137,8 +172,12 @@ async def load_epoch(db: AsyncSession) -> int:
     return epoch
 
 
-async def logout_everywhere(db: AsyncSession) -> str:
-    """Void every token issued so far and return a fresh one for the caller's device."""
+async def logout_everywhere(db: AsyncSession, user_id: int = OWNER_ID) -> str:
+    """Void the caller's tokens issued so far and return a fresh one for the caller's device. The owner's
+    "everywhere" is global: every session of every user ends."""
+    if user_id != OWNER_ID:
+        await bot_access.log_out_everywhere(db, user_id)
+        return auth.issue_token(user_id)
     epoch = int(time.time())
     row = await db.get(Setting, EPOCH_KEY)
     if row:

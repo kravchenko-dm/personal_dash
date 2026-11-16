@@ -189,7 +189,7 @@ async def tick(db: AsyncSession, now: datetime | None = None) -> dict:
             left = f"{minutes} мин" if minutes < 60 else f"{minutes / 60:.0f} ч"
             title = f"Через {left} срок: {_short(t.get('title', ''), 80)}"
             body = _describe(t, where, names)
-            await push.notify_all(db, title, body, url="/yougile", tag=f"ygl-{t['id']}")
+            await push.notify_owner(db, title, body, url="/yougile", tag=f"ygl-{t['id']}")
             await telegram_bot.send_to_owner(f"🗂 {title}\n{body}")
             reminded[t["id"]] = ts
             stats["reminded"] += 1
@@ -267,10 +267,10 @@ async def tick(db: AsyncSession, now: datetime | None = None) -> dict:
     if pushes:
         if len(pushes) <= PUSH_EACH_LIMIT:
             for title, body, tag in pushes:
-                await push.notify_all(db, title, body, url="/yougile", tag=tag)
+                await push.notify_owner(db, title, body, url="/yougile", tag=tag)
         else:
             body = "; ".join(p[0] for p in pushes[:4]) + ("…" if len(pushes) > 4 else "")
-            await push.notify_all(
+            await push.notify_owner(
                 db, f"YouGile: {len(pushes)} изменений", body, url="/yougile", tag="ygl-batch"
             )
     if lines:

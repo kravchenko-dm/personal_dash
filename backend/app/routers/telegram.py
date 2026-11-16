@@ -3,12 +3,13 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import require_auth
+from app.auth import require_auth, require_owner
 from app.config import get_settings
 from app.db import get_db
-from app.models import MediaJob, TelegramChat
+from app.models import MediaJob, Summary, Task, TelegramChat
 from app.schemas import TelegramChatOut
 from app.services import bot_access, telegram_bot
+from app.services.bot_access import Account
 
 router = APIRouter(prefix="/api/telegram", tags=["telegram"])
 
@@ -24,15 +25,18 @@ async def webhook(
     return {"ok": True}
 
 
-@router.get("/chats", response_model=list[TelegramChatOut], dependencies=[Depends(require_auth)])
-async def chats(db: AsyncSession = Depends(get_db)):
-    return list((await db.scalars(select(TelegramChat).order_by(TelegramChat.title))).all())
+@router.get("/chats", response_model=list[TelegramChatOut])
+async def chats(db: AsyncSession = Depends(get_db), user: Account = Depends(require_auth)):
+    stmt = select(TelegramChat).where(TelegramChat.user_id == user.id).order_by(TelegramChat.title)
+    return list((await db.scalars(stmt)).all())
 
 
-@router.patch("/chats/{chat_id}", response_model=TelegramChatOut, dependencies=[Depends(require_auth)])
-async def toggle_chat(chat_id: int, collect: bool, db: AsyncSession = Depends(get_db)):
+@router.patch("/chats/{chat_id}", response_model=TelegramChatOut)
+async def toggle_chat(
+    chat_id: int, collect: bool, db: AsyncSession = Depends(get_db), user: Account = Depends(require_auth)
+):
     chat = await db.get(TelegramChat, chat_id)
-    if not chat:
+    if not chat or chat.user_id != user.id:
         raise HTTPException(404, "Not found")
     chat.collect = collect
     await db.commit()
@@ -40,46 +44,72 @@ async def toggle_chat(chat_id: int, collect: bool, db: AsyncSession = Depends(ge
     return chat
 
 
-class GuestIn(BaseModel):
-    id: int = Field(gt=0)
+# ---------- users (owner only): who they are and how much they use, never their data ----------
+
+
+class UserIn(BaseModel):
+    telegram_id: int = Field(gt=0)
     name: str = ""
+    level: str = "workspace"
 
 
-@router.get("/guests", dependencies=[Depends(require_auth)])
-async def list_guests(db: AsyncSession = Depends(get_db)):
-    """Bot users besides the owner, with how many recordings they sent and what it cost."""
-    usage = {
-        row.chat_id: (row.n, row.cost)
-        for row in await db.execute(
-            select(
-                MediaJob.chat_id,
-                func.count().label("n"),
-                func.coalesce(func.sum(MediaJob.cost_rub), 0).label("cost"),
-            ).group_by(MediaJob.chat_id)
+class UserPatch(BaseModel):
+    name: str | None = None
+    level: str | None = None
+
+
+async def _usage(db: AsyncSession) -> dict[int, dict]:
+    out: dict[int, dict] = {}
+    for row in await db.execute(
+        select(MediaJob.chat_id, func.count(), func.coalesce(func.sum(MediaJob.cost_rub), 0)).group_by(
+            MediaJob.chat_id
         )
-    }
-    return {
-        "guests": [
+    ):
+        out.setdefault(row[0], {})["media"] = (row[1], round(float(row[2]), 2))
+    for model, key in ((TelegramChat, "chats"), (Summary, "summaries"), (Task, "tasks")):
+        for uid, n in await db.execute(select(model.user_id, func.count()).group_by(model.user_id)):
+            out.setdefault(-uid, {})[key] = n  # negative keys: users.id (positive: Telegram ids)
+    return out
+
+
+@router.get("/users", dependencies=[Depends(require_owner)])
+async def list_users(db: AsyncSession = Depends(get_db)):
+    usage = await _usage(db)
+    users = []
+    for a in bot_access.members():
+        media = usage.get(a.telegram_id or 0, {}).get("media", (0, 0))
+        mine = usage.get(-a.id, {})
+        users.append(
             {
-                **g,
-                "jobs": usage.get(g["id"], (0, 0))[0],
-                "cost_rub": round(float(usage.get(g["id"], (0, 0))[1]), 2),
+                **a.public(), "jobs": media[0], "cost_rub": media[1], "chats": mine.get("chats", 0),
+                "summaries": mine.get("summaries", 0), "tasks": mine.get("tasks", 0),
             }
-            for g in bot_access.guests()
-        ]
-    }
+        )  # fmt: skip
+    return {"users": users}
 
 
-@router.post("/guests", dependencies=[Depends(require_auth)])
-async def add_guest(body: GuestIn, db: AsyncSession = Depends(get_db)):
+@router.post("/users", dependencies=[Depends(require_owner)])
+async def add_user(body: UserIn, db: AsyncSession = Depends(get_db)):
     try:
-        return await bot_access.add(db, body.id, body.name)
+        return (await bot_access.add(db, body.telegram_id, body.name, level=body.level)).public()
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from None
 
 
-@router.delete("/guests/{user_id}", dependencies=[Depends(require_auth)])
-async def remove_guest(user_id: int, db: AsyncSession = Depends(get_db)):
+@router.patch("/users/{user_id}", dependencies=[Depends(require_owner)])
+async def update_user(user_id: int, body: UserPatch, db: AsyncSession = Depends(get_db)):
+    try:
+        acc = await bot_access.update(db, user_id, **body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    if acc is None or acc.is_owner:
+        raise HTTPException(404, "Нет такого пользователя")
+    return acc.public()
+
+
+@router.delete("/users/{user_id}", dependencies=[Depends(require_owner)])
+async def remove_user(user_id: int, db: AsyncSession = Depends(get_db)):
+    """Removes the member and everything that is theirs."""
     if not await bot_access.remove(db, user_id):
         raise HTTPException(404, "Нет такого пользователя")
     return {"ok": True}

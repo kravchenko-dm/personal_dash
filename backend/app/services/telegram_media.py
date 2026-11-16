@@ -26,6 +26,7 @@ from aiogram.types import (
 )
 from sqlalchemy import delete
 
+from app.config import get_settings
 from app.db import SessionLocal
 from app.models import MediaJob
 from app.schemas import TaskIn
@@ -288,7 +289,7 @@ def _digest_message(job: MediaJob) -> str:
         head += f"\n{_people(job)}"
     body = job.summary or "Выжимки нет — расшифровка в файле."
     tail = ""
-    if job.proposed_tasks and bot_access.is_owner(job.chat_id):
+    if job.proposed_tasks and bot_access.has_workspace(job.chat_id):
         tail = "\n\n💡 Задачи — нажмите, чтобы добавить:\n" + "\n".join(
             f"• {t['title']} — {t.get('reason', '')}" for t in job.proposed_tasks[:8]
         )
@@ -299,7 +300,8 @@ def _digest_message(job: MediaJob) -> str:
 
 
 def _keyboard(job: MediaJob) -> InlineKeyboardMarkup:
-    tasks = job.proposed_tasks[:8] if bot_access.is_owner(job.chat_id) else []  # guests: no owner's tasks
+    # task buttons only for people with their own task list
+    tasks = job.proposed_tasks[:8] if bot_access.has_workspace(job.chat_id) else []
     rows = [
         [InlineKeyboardButton(text=f"➕ {t['title'][:40]}", callback_data=f"mtask:{job.id}:{i}")]
         for i, t in enumerate(tasks)
@@ -457,10 +459,11 @@ async def _translate_names(names: dict[str, str], target: str) -> dict[str, str]
 # ---------- buttons ----------
 
 
-async def _job_for(query: CallbackQuery, owner_only: bool = False) -> tuple[MediaJob | None, list[str]]:
-    """The job behind a button; a guest may only touch their own recordings."""
+async def _job_for(query: CallbackQuery, need_workspace: bool = False) -> tuple[MediaJob | None, list[str]]:
+    """The job behind a button; everyone touches only their own recordings."""
     uid = query.from_user.id
-    if not (bot_access.is_owner(uid) or (not owner_only and bot_access.is_guest(uid))):
+    allowed = bot_access.has_workspace(uid) if need_workspace else bot_access.can_use(uid)
+    if not allowed:
         await query.answer("Нет доступа", show_alert=True)
         return None, []
     parts = query.data.split(":")
@@ -469,7 +472,7 @@ async def _job_for(query: CallbackQuery, owner_only: bool = False) -> tuple[Medi
     if not job:
         await query.answer("Запись уже удалена")
         return None, parts
-    if not bot_access.is_owner(uid) and job.chat_id != uid:
+    if job.chat_id != uid and get_settings().telegram_owner_id is not None:
         await query.answer("Нет доступа", show_alert=True)
         return None, parts
     return job, parts
@@ -477,7 +480,7 @@ async def _job_for(query: CallbackQuery, owner_only: bool = False) -> tuple[Medi
 
 @router.callback_query(F.data.startswith("mtask:"))
 async def cb_task(query: CallbackQuery) -> None:
-    job, parts = await _job_for(query, owner_only=True)
+    job, parts = await _job_for(query, need_workspace=True)
     if not job:
         return
     idx = int(parts[2])
@@ -495,6 +498,7 @@ async def cb_task(query: CallbackQuery) -> None:
             ),
             source="ai",
             source_ref=f"media:{job.id}",
+            user_id=bot_access.user_for(query.from_user.id).id,
         )
     await query.answer(f"Добавлено: #{task.id}")
 

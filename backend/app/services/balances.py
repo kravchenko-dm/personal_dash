@@ -49,7 +49,7 @@ async def _maybe_alert(db: AsyncSession, account: BalanceAccount, previous: floa
     below = account.last_value < threshold
     if below and (previous is None or previous >= threshold or account.alerted_at is None):
         account.alerted_at = datetime.now(timezone.utc)
-        await push.notify_all(
+        await push.notify_owner(
             db,
             title=f"Низкий баланс: {account.name}",
             body=f"{account.last_value:g} {account.currency} (порог {threshold:g})",

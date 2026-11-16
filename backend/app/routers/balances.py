@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import require_auth
+from app.auth import require_owner
 from app.db import get_db
 from app.integrations.registry import PROVIDERS, describe_providers
 from app.models import BalanceAccount, BalanceSample
@@ -22,7 +22,7 @@ def _masked(account: BalanceAccount) -> BalanceAccountOut:
     return out
 
 
-router = APIRouter(prefix="/api/balances", tags=["balances"], dependencies=[Depends(require_auth)])
+router = APIRouter(prefix="/api/balances", tags=["balances"], dependencies=[Depends(require_owner)])
 
 
 @router.get("/providers", response_model=list[ProviderInfo])

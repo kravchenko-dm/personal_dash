@@ -76,7 +76,7 @@ def world(monkeypatch):
         me=me, tasks=tasks, columns=columns, boards=boards, projects=projects, users=users, task_log=task_log
     ).items():
         monkeypatch.setattr(yg, name, fn)
-    monkeypatch.setattr(push, "notify_all", notify_all)
+    monkeypatch.setattr(push, "notify_owner", notify_all)
     monkeypatch.setattr(telegram_bot, "send_to_owner", send_to_owner)
     return w
 

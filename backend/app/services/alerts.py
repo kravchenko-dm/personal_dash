@@ -81,7 +81,7 @@ async def resolve_incident(db: AsyncSession, project_id: int, kind: str, key: st
 
 async def _notify(db: AsyncSession, text: str, url: str, tag: str) -> None:
     try:
-        await push.notify_all(db, "Мониторинг", text, url=url, tag=tag)
+        await push.notify_owner(db, "Мониторинг", text, url=url, tag=tag)
     except Exception as exc:
         log.warning("push alert failed: %s", exc)
     try:

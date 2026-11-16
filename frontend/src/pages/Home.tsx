@@ -5,15 +5,18 @@ import { useFetch } from "../lib/useFetch";
 import { fmtDate, fmtMoney } from "../lib/format";
 import { TaskRow } from "./Tasks";
 import { EventList } from "./Calendar";
+import { useIsOwner } from "../lib/me";
 
 export default function Home() {
+  const owner = useIsOwner();
+  const only = (path: string) => (owner ? path : null); // members have no servers, balances, calendar…
   const tasks = useFetch<Task[]>("/api/tasks");
-  const balances = useFetch<BalanceAccount[]>("/api/balances");
-  const events = useFetch<{ connected: boolean; events: CalendarEvent[] }>("/api/calendar/events?days=1");
+  const balances = useFetch<BalanceAccount[]>(only("/api/balances"));
+  const events = useFetch<{ connected: boolean; events: CalendarEvent[] }>(only("/api/calendar/events?days=1"));
   const summaries = useFetch<Summary[]>("/api/summaries?limit=1");
-  const reminders = useFetch<AppleRemindersResp>("/api/apple/reminders");
-  const projects = useFetch<Project[]>("/api/projects");
-  const incidents = useFetch<Incident[]>("/api/incidents");
+  const reminders = useFetch<AppleRemindersResp>(only("/api/apple/reminders"));
+  const projects = useFetch<Project[]>(only("/api/projects"));
+  const incidents = useFetch<Incident[]>(only("/api/incidents"));
 
   const open = (tasks.data ?? []).filter((t) => t.status !== "done");
   const today = open.filter((t) => t.due_at && new Date(t.due_at).getTime() < Date.now() + 86400000);
@@ -114,19 +117,21 @@ export default function Home() {
         </div>
       )}
 
-      <div className="card">
-        <div className="row between">
-          <h3>Сегодня в календаре</h3>
-          <Link to="/calendar" className="small">
-            ›
-          </Link>
+      {owner && (
+        <div className="card">
+          <div className="row between">
+            <h3>Сегодня в календаре</h3>
+            <Link to="/calendar" className="small">
+              ›
+            </Link>
+          </div>
+          {events.data && !events.data.connected ? (
+            <p className="muted small">Google Calendar не подключён.</p>
+          ) : (
+            <EventList events={events.data?.events ?? []} compact />
+          )}
         </div>
-        {events.data && !events.data.connected ? (
-          <p className="muted small">Google Calendar не подключён.</p>
-        ) : (
-          <EventList events={events.data?.events ?? []} compact />
-        )}
-      </div>
+      )}
 
       {latest && (
         <div className="card">

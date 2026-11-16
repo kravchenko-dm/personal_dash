@@ -16,6 +16,7 @@ from app.services import (
     apple_reminders,
     backups,
     balances,
+    bot_access,
     calendar_alerts,
     monitoring,
     push,
@@ -34,6 +35,20 @@ async def job_refresh_balances() -> None:
         await balances.refresh_all(db)
 
 
+async def _tell(
+    db, user_id: int, title: str, body: str, telegram: str, url: str, tag: str, markup=None
+) -> None:
+    """Push + Telegram to one user: the owner through the usual owner channel, members to their DM."""
+    await push.notify_user(db, user_id, title, body, url=url, tag=tag)
+    acc = bot_access.get(user_id)
+    if acc is None:
+        return
+    if acc.is_owner:
+        await telegram_bot.send_to_owner(telegram, reply_markup=markup)
+    else:
+        await telegram_bot.send_to_user(acc.telegram_id, telegram, reply_markup=markup)
+
+
 async def job_task_reminders() -> None:
     now = datetime.now(timezone.utc)
     horizon = now + timedelta(minutes=15)
@@ -47,28 +62,36 @@ async def job_task_reminders() -> None:
         due = list((await db.scalars(stmt)).all())
         for task in due:
             when = task.due_at.astimezone().strftime("%H:%M")
-            await push.notify_all(
-                db, f"Задача: {task.title}", f"Срок {when}", url="/tasks", tag=f"task-{task.id}"
-            )
-            await telegram_bot.send_to_owner(f"⏰ {task.title} — срок {when}\n/done {task.id}")
+            await _tell(
+                db, task.user_id, f"Задача: {task.title}", f"Срок {when}",
+                f"⏰ {task.title} — срок {when}\n/done {task.id}", url="/tasks", tag=f"task-{task.id}",
+            )  # fmt: skip
             task.reminded_at = now
         if due:
             await db.commit()
 
 
 async def job_daily_digest() -> None:
+    """Every user with a workspace and the evening digest on gets a summary of their own chats."""
     if not get_settings().llm_enabled:
         return
-    async with SessionLocal() as db:
-        try:
-            summary = await summaries.build_summary(db, chat_id=None, hours=24, mark_summarized=True)
-        except Exception as exc:
-            log.exception("daily digest failed: %s", exc)
-            return
-        if not summary:
-            return
-        await telegram_bot.send_summary_to_owner(summary)
-        await push.notify_all(db, "Вечерний дайджест", summary.text[:120], url="/summaries", tag="digest")
+    for acc in bot_access.workspace_accounts():
+        if not acc.evening_digest:
+            continue
+        async with SessionLocal() as db:
+            try:
+                summary = await summaries.build_summary(
+                    db, chat_id=None, hours=24, mark_summarized=True, user_id=acc.id
+                )
+            except Exception as exc:
+                log.exception("daily digest for user %s failed: %s", acc.id, exc)
+                continue
+            if not summary:
+                continue
+            await telegram_bot.send_summary(summary)
+            await push.notify_user(
+                db, acc.id, "Вечерний дайджест", summary.text[:120], url="/summaries", tag="digest"
+            )
 
 
 async def job_caldav_reminders() -> None:
@@ -80,14 +103,25 @@ async def job_caldav_reminders() -> None:
 
 
 async def job_morning_brief() -> None:
-    async with SessionLocal() as db:
-        tasks = await open_tasks_text(db, limit=10)
+    for acc in bot_access.workspace_accounts():
+        if not acc.morning_brief:
+            continue
+        try:
+            async with SessionLocal() as db:
+                await _morning_brief(db, acc)
+        except Exception as exc:
+            log.exception("morning brief for user %s failed: %s", acc.id, exc)
+
+
+async def _morning_brief(db, acc) -> None:
+    tasks = await open_tasks_text(db, acc.id, limit=10)
+    text = f"☀️ Доброе утро!\n\nЗадачи:\n{tasks}"
+    if acc.is_owner:  # calendar, Apple and YouGile are the owner's
         cal = ""
         try:
             cal = await agenda.upcoming_text(db, days=1)
         except Exception as exc:
             log.info("morning brief: calendar skipped: %s", exc)
-        text = f"☀️ Доброе утро!\n\nЗадачи:\n{tasks}"
         reminders = apple_reminders.reminders_text(await apple_reminders.list_reminders(db))
         if reminders:
             text += f"\n\nНапоминания Apple:\n{reminders}"
@@ -100,10 +134,11 @@ async def job_morning_brief() -> None:
             log.info("morning brief: yougile skipped: %s", exc)
         if ygl:
             text += f"\n\nYouGile:\n{ygl}"
-        await telegram_bot.send_to_owner(text)
-        await push.notify_all(
-            db, "Утренний бриф", tasks.splitlines()[0] if tasks else "", url="/", tag="morning"
-        )
+    elif tasks == "Открытых задач нет.":
+        return  # members get no brief on an empty list
+    await _tell(
+        db, acc.id, "Утренний бриф", tasks.splitlines()[0] if tasks else "", text, url="/", tag="morning"
+    )
 
 
 async def job_calendar_alerts() -> None:

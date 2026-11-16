@@ -6,14 +6,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import require_auth
+from app.auth import require_owner
 from app.db import get_db
-from app.models import Feature, Project, ProjectNote, Summary, TelegramChat
+from app.models import OWNER_ID, Feature, Project, ProjectNote, Summary, TelegramChat
 from app.schemas import SummaryOut, TelegramChatOut
 from app.services import alerts, monitoring
 from app.services import projects as svc
 
-router = APIRouter(prefix="/api/projects", tags=["projects"], dependencies=[Depends(require_auth)])
+router = APIRouter(prefix="/api/projects", tags=["projects"], dependencies=[Depends(require_owner)])
 
 Stage = Literal["idea", "dev", "beta", "prod", "paused"]
 FeatureStatus = Literal["idea", "planned", "in_progress", "testing", "done"]
@@ -336,7 +336,7 @@ async def delete_note(project_id: int, note_id: int, db: AsyncSession = Depends(
 async def attach_chat(project_id: int, chat_row_id: int, db: AsyncSession = Depends(get_db)):
     await _project_or_404(db, project_id)
     chat = await db.get(TelegramChat, chat_row_id)
-    if not chat:
+    if not chat or chat.user_id != OWNER_ID:  # members' chats are not the owner's to read
         raise HTTPException(404, "Чат не найден")
     chat.project_id = project_id
     await db.commit()

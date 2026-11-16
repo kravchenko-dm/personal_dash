@@ -15,10 +15,15 @@ from app.main import app  # noqa: E402
 @pytest_asyncio.fixture(autouse=True)
 async def _fresh_db():
     from app import models  # noqa: F401
+    from app.db import SessionLocal
+    from app.services import bot_access
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
+    bot_access._requested.clear()
+    async with SessionLocal() as db:
+        await bot_access.load(db)  # creates the owner (user 1) like migration 0007 does
     yield
 
 
@@ -33,6 +38,26 @@ async def auth(client: AsyncClient) -> dict[str, str]:
     resp = await client.post("/api/auth/login", json={"password": "secret"})
     assert resp.status_code == 200
     return {"Authorization": f"Bearer {resp.json()['token']}"}
+
+
+MEMBER_TG = 555
+
+
+@pytest_asyncio.fixture
+async def member() -> int:
+    """A member with a workspace; returns their users.id."""
+    from app.db import SessionLocal
+    from app.services import bot_access
+
+    async with SessionLocal() as db:
+        return (await bot_access.add(db, MEMBER_TG, "Пётр", "petr", level="workspace")).id
+
+
+@pytest_asyncio.fixture
+async def member_auth(member: int) -> dict[str, str]:
+    from app.auth import issue_token
+
+    return {"Authorization": f"Bearer {issue_token(member)}"}
 
 
 @pytest.fixture(scope="session", autouse=True)

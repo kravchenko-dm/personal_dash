@@ -8,13 +8,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import require_auth
+from app.auth import require_owner
 from app.config import get_settings
 from app.db import get_db
 from app.models import AgentCommand, Incident, Monitor, Project, Server
 from app.services import alerts, monitoring
 
-router = APIRouter(prefix="/api", tags=["monitoring"], dependencies=[Depends(require_auth)])
+router = APIRouter(prefix="/api", tags=["monitoring"], dependencies=[Depends(require_owner)])
 
 
 class ServerIn(BaseModel):

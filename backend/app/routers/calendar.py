@@ -8,7 +8,7 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import require_auth
+from app.auth import require_owner
 from app.config import get_settings
 from app.db import get_db
 from app.services import agenda, calendar_alerts, icloud
@@ -62,7 +62,7 @@ class EventIn(BaseModel):
             raise HTTPException(400, f"Неверная дата: {exc}") from exc
 
 
-@router.get("/oauth/start", dependencies=[Depends(require_auth)])
+@router.get("/oauth/start", dependencies=[Depends(require_owner)])
 async def oauth_start():
     if not get_settings().google_enabled:
         raise HTTPException(400, "GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET не заданы")
@@ -90,13 +90,13 @@ async def oauth_callback(
     return RedirectResponse("/calendar?connected=1")
 
 
-@router.post("/disconnect", dependencies=[Depends(require_auth)])
+@router.post("/disconnect", dependencies=[Depends(require_owner)])
 async def disconnect(db: AsyncSession = Depends(get_db)):
     await svc.disconnect(db)
     return {"ok": True}
 
 
-@router.get("/calendars", dependencies=[Depends(require_auth)])
+@router.get("/calendars", dependencies=[Depends(require_owner)])
 async def calendars(db: AsyncSession = Depends(get_db)):
     """All calendars from every connected provider plus the selected ids per provider."""
     out: list[dict] = []
@@ -123,7 +123,7 @@ async def calendars(db: AsyncSession = Depends(get_db)):
     }
 
 
-@router.put("/calendars/selected", dependencies=[Depends(require_auth)])
+@router.put("/calendars/selected", dependencies=[Depends(require_owner)])
 async def set_selected(body: SelectedIn, db: AsyncSession = Depends(get_db)):
     if body.source == "icloud":
         await icloud.set_selected_calendars(db, body.ids)
@@ -132,7 +132,7 @@ async def set_selected(body: SelectedIn, db: AsyncSession = Depends(get_db)):
     return {"ok": True}
 
 
-@router.get("/events", dependencies=[Depends(require_auth)])
+@router.get("/events", dependencies=[Depends(require_owner)])
 async def events(days: int = 7, db: AsyncSession = Depends(get_db)):
     if not await agenda.connected(db):
         return {"connected": False, "events": [], "errors": []}
@@ -140,7 +140,7 @@ async def events(days: int = 7, db: AsyncSession = Depends(get_db)):
     return {"connected": True, "events": found, "errors": errors}
 
 
-@router.post("/events", dependencies=[Depends(require_auth)], status_code=201)
+@router.post("/events", dependencies=[Depends(require_owner)], status_code=201)
 async def create_event(body: EventIn, db: AsyncSession = Depends(get_db)):
     start, end = body.bounds()
     try:
@@ -155,12 +155,12 @@ async def create_event(body: EventIn, db: AsyncSession = Depends(get_db)):
         raise HTTPException(400, str(exc)) from exc
 
 
-@router.get("/alerts", dependencies=[Depends(require_auth)])
+@router.get("/alerts", dependencies=[Depends(require_owner)])
 async def get_alerts(db: AsyncSession = Depends(get_db)):
     return {**(await calendar_alerts.get_config(db)), "choices": list(calendar_alerts.REMIND_CHOICES)}
 
 
-@router.put("/alerts", dependencies=[Depends(require_auth)])
+@router.put("/alerts", dependencies=[Depends(require_owner)])
 async def set_alerts(body: AlertsIn, db: AsyncSession = Depends(get_db)):
     try:
         cfg = await calendar_alerts.set_config(db, body.model_dump())

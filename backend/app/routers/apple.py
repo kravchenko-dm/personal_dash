@@ -4,14 +4,14 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import require_auth
+from app.auth import require_owner
 from app.db import get_db
 from app.models import AppleReminder
 from app.schemas import TaskOut
 from app.services import apple_reminders as svc
 from app.services.apple_reminders import SyncIn
 
-router = APIRouter(prefix="/api/apple", tags=["apple"], dependencies=[Depends(require_auth)])
+router = APIRouter(prefix="/api/apple", tags=["apple"], dependencies=[Depends(require_owner)])
 
 
 class ReminderOut(BaseModel):

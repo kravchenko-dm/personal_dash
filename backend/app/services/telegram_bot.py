@@ -22,7 +22,7 @@ from sqlalchemy import select
 
 from app.config import get_settings
 from app.db import SessionLocal
-from app.models import Feature, Summary, Task, TelegramChat, TelegramMessage
+from app.models import OWNER_ID, Feature, Summary, Task, TelegramChat, TelegramMessage
 from app.schemas import TaskIn
 from app.services import bot_access
 from app.services import summaries as summaries_svc
@@ -51,11 +51,11 @@ def is_owner(user_id: int | None) -> bool:
 # ---------- helpers ----------
 
 
-async def _ensure_chat(chat_id: int, title: str, kind: str) -> TelegramChat:
+async def _ensure_chat(chat_id: int, title: str, kind: str, user_id: int = OWNER_ID) -> TelegramChat:
     async with SessionLocal() as db:
         chat = await db.scalar(select(TelegramChat).where(TelegramChat.chat_id == chat_id))
         if not chat:
-            chat = TelegramChat(chat_id=chat_id, title=title, kind=kind)
+            chat = TelegramChat(chat_id=chat_id, title=title, kind=kind, user_id=user_id)
             db.add(chat)
         else:
             chat.title = title or chat.title
@@ -101,6 +101,19 @@ GUEST_HELP = (
     "больше — ссылкой на диск."
 )
 
+WORKSPACE_HELP = (
+    "Я собираю сообщения из ваших групп (добавьте меня туда сами) и из этого чата, делаю саммари "
+    "с идеями задач, по вечерам присылаю дайджест, по утрам — список задач.\n\n"
+    "/login — ссылка для входа в веб-кабинет\n"
+    "/summary [часов] — саммари этого чата (в личке — всех ваших чатов)\n"
+    "/digest [часов] — саммари по всем вашим чатам\n"
+    "/tasks — открытые задачи\n"
+    "/add текст — добавить задачу\n"
+    "/done id — закрыть задачу\n\n" + GUEST_HELP
+)
+
+LEVEL_NAMES = {"workspace": "свой кабинет", "media": "только расшифровка"}
+
 
 def _who(user) -> str:
     name = user.full_name if user else "?"
@@ -111,12 +124,22 @@ def _who(user) -> str:
     )
 
 
+def _workspace(message: Message) -> bot_access.Account | None:
+    """The sender's account when they have a workspace (owner or member)."""
+    acc = bot_access.user_for(message.from_user.id if message.from_user else None)
+    return acc if acc and acc.has_workspace else None
+
+
 @router.message(Command("start", "help"))
-async def cmd_start(message: Message) -> None:
+async def cmd_start(message: Message, command: CommandObject | None = None) -> None:
     user = message.from_user
     uid = user.id if user else None
-    if is_owner(uid):
-        await _ensure_chat(message.chat.id, _chat_title(message), message.chat.type)
+    acc = bot_access.user_for(uid)
+    if acc and message.chat.type == ChatType.PRIVATE and command and (command.args or "").strip() == "login":
+        await _send_login_link(message, acc)
+        return
+    if acc and acc.is_owner:
+        await _ensure_chat(message.chat.id, _chat_title(message), message.chat.type, acc.id)
         await message.answer(
             "Привет! Я собираю сообщения из чатов, куда вы меня добавили, и делаю саммари с идеями задач.\n\n"
             "/summary [часов] — саммари этого чата (по умолчанию 24ч)\n"
@@ -124,6 +147,7 @@ async def cmd_start(message: Message) -> None:
             "/tasks — открытые задачи\n"
             "/add текст — добавить задачу\n"
             "/done id — закрыть задачу\n"
+            "/login — ссылка для входа в дашборд\n"
             "\nВ личке пришлите голосовое, аудио, видео или ссылку (YouTube, VK, Rutube, Яндекс.Диск) — "
             "расшифрую, сделаю выжимку и предложу задачи. В подписи можно написать пожелание, "
             "например «переведи на английский».\n"
@@ -131,20 +155,28 @@ async def cmd_start(message: Message) -> None:
         )
         return
     if message.chat.type != ChatType.PRIVATE:
-        return  # strangers in groups get no answer at all
-    if bot_access.is_guest(uid):
+        return  # members and strangers get no help in groups
+    if acc and acc.has_workspace:
+        await _ensure_chat(message.chat.id, _chat_title(message), message.chat.type, acc.id)
+        await message.answer(WORKSPACE_HELP)
+        return
+    if acc:
         await message.answer(GUEST_HELP)
         return
     if user and bot_access.should_ask_owner(user.id):
         await send_to_owner(
-            f"👤 Просит доступ к боту: {_who(user)}\nГостю будет доступна только расшифровка своих записей "
-            "(распознавание — за ваш счёт).",
+            f"👤 Просит доступ к боту: {_who(user)}\n"
+            "«Свой кабинет» — свои задачи, сбор своих чатов, саммари и дайджесты, вход в веб-кабинет. "
+            "«Только расшифровка» — расшифровка своих записей. Нейросеть и распознавание — за ваш счёт.",
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[
                     [
-                        InlineKeyboardButton(text="✅ Разрешить", callback_data=f"acc:yes:{user.id}"),
-                        InlineKeyboardButton(text="🚫 Отклонить", callback_data=f"acc:no:{user.id}"),
-                    ]
+                        InlineKeyboardButton(text="🗂 Свой кабинет", callback_data=f"acc:workspace:{user.id}"),
+                        InlineKeyboardButton(
+                            text="🎙 Только расшифровка", callback_data=f"acc:media:{user.id}"
+                        ),
+                    ],
+                    [InlineKeyboardButton(text="🚫 Отклонить", callback_data=f"acc:no:{user.id}")],
                 ]
             ),
         )
@@ -159,53 +191,87 @@ async def cb_access(query: CallbackQuery) -> None:
     _, verdict, raw_id = query.data.split(":")
     user_id = int(raw_id)
     request_text = (query.message.text or "") if query.message else ""
-    if verdict == "yes":
+    if verdict in ("yes", "media", "workspace"):
+        level = "media" if verdict == "yes" else verdict  # "yes" came from older request messages
         name, username = "", ""
         m = re.search(r"доступ к боту: (.+?) \((?:@(\w+), )?id \d+\)", request_text)
         if m:
             name, username = m.group(1), m.group(2) or ""
         async with SessionLocal() as db:
-            await bot_access.add(db, user_id, name, username)
+            await bot_access.add(db, user_id, name, username, level=level)
+        welcome = WORKSPACE_HELP if level == "workspace" else GUEST_HELP
         try:
-            await query.bot.send_message(user_id, "✅ Доступ открыт.\n\n" + GUEST_HELP)
+            await query.bot.send_message(user_id, "✅ Доступ открыт.\n\n" + welcome)
         except Exception as exc:
-            log.warning("guest notify failed: %s", exc)
-        note = "\n\n✅ Доступ выдан. Убрать — «Ещё → Пользователи бота»."
+            log.warning("member notify failed: %s", exc)
+        note = f"\n\n✅ Доступ выдан: {LEVEL_NAMES[level]}. Изменить — «Ещё → Пользователи»."
     else:
         note = "\n\n🚫 Отклонено."
     await query.answer()
     if query.message:
         try:
-            await query.message.edit_text(request_text.split("\n\n")[0] + note)
+            await query.message.edit_text(request_text.split("\n")[0] + note)
         except Exception:
             pass
 
 
+async def _send_login_link(message: Message, acc: bot_access.Account) -> None:
+    if not acc.has_workspace:
+        await message.answer("Веб-кабинет есть только при доступе «свой кабинет». Попросите владельца.")
+        return
+    from app.auth import CODE_TTL, new_login_code
+
+    url = f"{get_settings().public_url}/login?code={new_login_code(acc.id)}"
+    await message.answer(
+        f"Ссылка для входа (действует {CODE_TTL // 60} минут, только один раз):\n{url}\n\n"
+        "Никому её не пересылайте.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔑 Войти", url=url)]]),
+    )
+
+
+@router.message(Command("login"))
+async def cmd_login(message: Message) -> None:
+    if message.chat.type != ChatType.PRIVATE:
+        return  # a login link must never land in a group
+    acc = bot_access.user_for(message.from_user.id if message.from_user else None)
+    if not acc:
+        await message.answer("Это личный бот. /start — запросить доступ.")
+        return
+    await _send_login_link(message, acc)
+
+
 @router.message(Command("tasks"))
 async def cmd_tasks(message: Message) -> None:
-    if not is_owner(message.from_user.id if message.from_user else None):
+    acc = _workspace(message)
+    if not acc:
         return
     async with SessionLocal() as db:
-        await message.answer(await open_tasks_text(db))
+        await message.answer(await open_tasks_text(db, acc.id))
 
 
 @router.message(Command("add"))
 async def cmd_add(message: Message, command: CommandObject) -> None:
-    if not is_owner(message.from_user.id if message.from_user else None):
+    acc = _workspace(message)
+    if not acc:
         return
     if not command.args:
         await message.answer("Использование: /add текст задачи")
         return
     async with SessionLocal() as db:
         task = await create_task(
-            db, TaskIn(title=command.args.strip()), source="telegram", source_ref=str(message.chat.id)
+            db,
+            TaskIn(title=command.args.strip()),
+            source="telegram",
+            source_ref=str(message.chat.id),
+            user_id=acc.id,
         )
     await message.answer(f"✅ Задача #{task.id} добавлена: {task.title}")
 
 
 @router.message(Command("done"))
 async def cmd_done(message: Message, command: CommandObject) -> None:
-    if not is_owner(message.from_user.id if message.from_user else None):
+    acc = _workspace(message)
+    if not acc:
         return
     try:
         task_id = int((command.args or "").strip().lstrip("#"))
@@ -214,7 +280,7 @@ async def cmd_done(message: Message, command: CommandObject) -> None:
         return
     async with SessionLocal() as db:
         task = await db.get(Task, task_id)
-        if not task:
+        if not task or task.user_id != acc.id:
             await message.answer("Нет такой задачи")
             return
         task.status = "done"
@@ -223,11 +289,11 @@ async def cmd_done(message: Message, command: CommandObject) -> None:
     await message.answer(f"✅ #{task_id} закрыта")
 
 
-async def _send_summary(message: Message, chat_id: int | None, hours: int) -> None:
+async def _send_summary(message: Message, acc: bot_access.Account, chat_id: int | None, hours: int) -> None:
     waiting = await message.answer("⏳ Думаю…")
     try:
         async with SessionLocal() as db:
-            summary = await summaries_svc.build_summary(db, chat_id=chat_id, hours=hours)
+            summary = await summaries_svc.build_summary(db, chat_id=chat_id, hours=hours, user_id=acc.id)
     except Exception as exc:
         log.exception("summary failed")
         await waiting.edit_text(f"Не получилось: {exc}")
@@ -240,30 +306,33 @@ async def _send_summary(message: Message, chat_id: int | None, hours: int) -> No
 
 @router.message(Command("summary"))
 async def cmd_summary(message: Message, command: CommandObject) -> None:
-    if not is_owner(message.from_user.id if message.from_user else None):
+    acc = _workspace(message)
+    if not acc:
         return
     hours = int(command.args) if command.args and command.args.isdigit() else 24
     chat_id = None if message.chat.type == ChatType.PRIVATE else message.chat.id
-    await _send_summary(message, chat_id, hours)
+    await _send_summary(message, acc, chat_id, hours)
 
 
 @router.message(Command("digest"))
 async def cmd_digest(message: Message, command: CommandObject) -> None:
-    if not is_owner(message.from_user.id if message.from_user else None):
+    acc = _workspace(message)
+    if not acc:
         return
     hours = int(command.args) if command.args and command.args.isdigit() else 24
-    await _send_summary(message, None, hours)
+    await _send_summary(message, acc, None, hours)
 
 
 @router.callback_query(F.data.startswith("addtask:"))
 async def cb_add_task(query: CallbackQuery) -> None:
-    if not is_owner(query.from_user.id):
-        await query.answer("Только владелец", show_alert=True)
-        return
+    acc = bot_access.user_for(query.from_user.id)
     _, summary_id, idx = query.data.split(":")
     async with SessionLocal() as db:
         summary = await db.get(Summary, int(summary_id))
-        if not summary or int(idx) >= len(summary.proposed_tasks):
+        if not acc or not summary or summary.user_id != acc.id:
+            await query.answer("Нет доступа", show_alert=True)
+            return
+        if int(idx) >= len(summary.proposed_tasks):
             await query.answer("Предложение устарело")
             return
         proposal = summary.proposed_tasks[int(idx)]
@@ -276,6 +345,7 @@ async def cb_add_task(query: CallbackQuery) -> None:
             ),
             source="ai",
             source_ref=f"summary:{summary.id}",
+            user_id=summary.user_id,
         )
     await query.answer(f"Добавлено: #{task.id}")
 
@@ -288,7 +358,12 @@ async def cb_add_feature(query: CallbackQuery) -> None:
     _, summary_id, idx = query.data.split(":")
     async with SessionLocal() as db:
         summary = await db.get(Summary, int(summary_id))
-        if not summary or not summary.project_id or int(idx) >= len(summary.proposed_tasks):
+        if (
+            not summary
+            or summary.user_id != OWNER_ID
+            or not summary.project_id
+            or int(idx) >= len(summary.proposed_tasks)
+        ):
             await query.answer("Предложение устарело")
             return
         from app.services import projects as projects_svc
@@ -314,18 +389,22 @@ async def cb_add_feature(query: CallbackQuery) -> None:
 
 @router.my_chat_member()
 async def on_membership(event: ChatMemberUpdated) -> None:
+    """A group belongs to whoever added the bot (the owner or a member with a workspace): their
+    summaries and digests read it. Anyone else adding the bot makes it leave."""
     status = event.new_chat_member.status
     joined = status in ("member", "administrator") and event.old_chat_member.status in ("left", "kicked")
     if event.chat.type == ChatType.PRIVATE:
         return  # a user started or blocked the bot: nothing to collect
-    if joined and not is_owner(event.from_user.id if event.from_user else None):
+    adder = bot_access.user_for(event.from_user.id if event.from_user else None)
+    title = event.chat.title or str(event.chat.id)
+    if joined and not (adder and adder.has_workspace):
         try:
             await event.bot.leave_chat(event.chat.id)
         except Exception as exc:
             log.warning("leave_chat failed: %s", exc)
         await send_to_owner(
-            f"🚪 Меня добавили в группу «{event.chat.title or event.chat.id}» — {_who(event.from_user)}. "
-            "Это не вы, поэтому я вышел. Добавьте меня сами, если группа нужна."
+            f"🚪 Меня добавили в группу «{title}» — {_who(event.from_user)}. "
+            "У этого человека нет своего кабинета, поэтому я вышел."
         )
         return
     async with SessionLocal() as db:
@@ -333,9 +412,21 @@ async def on_membership(event: ChatMemberUpdated) -> None:
         if status in ("member", "administrator"):
             if not chat:
                 db.add(
-                    TelegramChat(chat_id=event.chat.id, title=event.chat.title or "", kind=event.chat.type)
-                )
+                    TelegramChat(
+                        chat_id=event.chat.id, title=event.chat.title or "", kind=event.chat.type,
+                        user_id=adder.id if adder else OWNER_ID,
+                    )
+                )  # fmt: skip
             elif joined:
+                if adder and chat.user_id != adder.id and not chat.collect:
+                    chat.user_id, chat.project_id = adder.id, None  # it was abandoned: the new adder takes it
+                elif adder and chat.user_id != adder.id:
+                    await db.commit()
+                    await send_to_user(
+                        event.from_user.id,
+                        f"Группу «{title}» уже собирает другой пользователь дашборда, вам она не попадёт.",
+                    )
+                    return
                 chat.collect = True
         elif chat:
             chat.collect = False
@@ -359,14 +450,13 @@ async def collect(message: Message) -> None:
         return
     uid = message.from_user.id if message.from_user else None
     if message.chat.type == ChatType.PRIVATE:
-        if not is_owner(uid):  # strangers' and guests' private chats are never stored
-            await message.answer(
-                GUEST_HELP if bot_access.is_guest(uid) else "Это личный бот. /start — запросить доступ."
-            )
+        acc = bot_access.user_for(uid)
+        if not (acc and acc.has_workspace):  # strangers' and transcription-only private chats are not stored
+            await message.answer(GUEST_HELP if acc else "Это личный бот. /start — запросить доступ.")
             return
-        chat = await _ensure_chat(message.chat.id, _chat_title(message), message.chat.type)
+        chat = await _ensure_chat(message.chat.id, _chat_title(message), message.chat.type, acc.id)
     else:
-        # groups are stored only after the owner added the bot (on_membership)
+        # groups are stored only after someone with a workspace added the bot (on_membership)
         async with SessionLocal() as db:
             chat = await db.scalar(select(TelegramChat).where(TelegramChat.chat_id == message.chat.id))
         if chat is None:
@@ -439,5 +529,23 @@ async def send_to_owner(text: str, reply_markup: InlineKeyboardMarkup | None = N
         log.warning("telegram send_to_owner failed: %s", exc)
 
 
-async def send_summary_to_owner(summary: Summary) -> None:
-    await send_to_owner(_summary_text(summary), reply_markup=_tasks_keyboard(summary))
+async def send_to_user(
+    telegram_id: int | None, text: str, reply_markup: InlineKeyboardMarkup | None = None
+) -> None:
+    if not (_bot and telegram_id):
+        return
+    try:
+        await _bot.send_message(telegram_id, text[:4000], reply_markup=reply_markup)
+    except Exception as exc:
+        log.warning("telegram send_to_user failed: %s", exc)
+
+
+async def send_summary(summary: Summary) -> None:
+    """To whoever the summary belongs to."""
+    acc = bot_access.get(summary.user_id)
+    if acc is None:
+        return
+    if acc.is_owner:
+        await send_to_owner(_summary_text(summary), reply_markup=_tasks_keyboard(summary))
+    else:
+        await send_to_user(acc.telegram_id, _summary_text(summary), reply_markup=_tasks_keyboard(summary))

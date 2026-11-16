@@ -2,22 +2,35 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import require_auth
+from app.auth import require_auth, require_owner
 from app.db import get_db
 from app.models import Feature, Summary
 from app.routers.projects import FeatureOut
 from app.schemas import SummaryOut, TaskIn, TaskOut
 from app.services import projects as projects_svc
 from app.services import summaries as svc
+from app.services.bot_access import Account
 from app.services.llm import LLMError
 from app.services.tasks import create_task
 
-router = APIRouter(prefix="/api/summaries", tags=["summaries"], dependencies=[Depends(require_auth)])
+router = APIRouter(prefix="/api/summaries", tags=["summaries"])
+
+
+async def _own_summary(db: AsyncSession, summary_id: int, index: int, user: Account) -> Summary:
+    summary = await db.get(Summary, summary_id)
+    if not summary or summary.user_id != user.id or index >= len(summary.proposed_tasks):
+        raise HTTPException(404, "Proposal not found")
+    return summary
 
 
 @router.get("", response_model=list[SummaryOut])
-async def list_summaries(limit: int = 20, project_id: int | None = None, db: AsyncSession = Depends(get_db)):
-    stmt = select(Summary).order_by(Summary.created_at.desc()).limit(limit)
+async def list_summaries(
+    limit: int = 20,
+    project_id: int | None = None,
+    db: AsyncSession = Depends(get_db),
+    user: Account = Depends(require_auth),
+):
+    stmt = select(Summary).where(Summary.user_id == user.id).order_by(Summary.created_at.desc()).limit(limit)
     if project_id is not None:
         stmt = stmt.where(Summary.project_id == project_id)
     return list((await db.scalars(stmt)).all())
@@ -29,21 +42,30 @@ async def make_summary(
     hours: int = 24,
     project_id: int | None = None,
     db: AsyncSession = Depends(get_db),
+    user: Account = Depends(require_auth),
 ):
     try:
-        return await svc.build_summary(db, chat_id=chat_id, hours=hours, project_id=project_id)
+        return await svc.build_summary(
+            db,
+            chat_id=chat_id,
+            hours=hours,
+            project_id=project_id if user.is_owner else None,
+            user_id=user.id,
+        )
     except (LLMError, RuntimeError) as exc:
         raise HTTPException(400, str(exc)) from exc
 
 
 @router.post("/{summary_id}/accept-feature/{index}", response_model=FeatureOut)
 async def accept_feature(
-    summary_id: int, index: int, project_id: int | None = None, db: AsyncSession = Depends(get_db)
+    summary_id: int,
+    index: int,
+    project_id: int | None = None,
+    db: AsyncSession = Depends(get_db),
+    user: Account = Depends(require_owner),
 ):
     """Turn a proposal into a card on the project's feature board (status: idea)."""
-    summary = await db.get(Summary, summary_id)
-    if not summary or index >= len(summary.proposed_tasks):
-        raise HTTPException(404, "Proposal not found")
+    summary = await _own_summary(db, summary_id, index, user)
     pid = project_id or summary.project_id
     if pid is None:
         raise HTTPException(400, "Саммари не привязано к проекту, укажите project_id")
@@ -65,14 +87,15 @@ async def accept_feature(
 
 
 @router.post("/{summary_id}/accept/{index}", response_model=TaskOut)
-async def accept_task(summary_id: int, index: int, db: AsyncSession = Depends(get_db)):
-    summary = await db.get(Summary, summary_id)
-    if not summary or index >= len(summary.proposed_tasks):
-        raise HTTPException(404, "Proposal not found")
+async def accept_task(
+    summary_id: int, index: int, db: AsyncSession = Depends(get_db), user: Account = Depends(require_auth)
+):
+    summary = await _own_summary(db, summary_id, index, user)
     p = summary.proposed_tasks[index]
     return await create_task(
         db,
         TaskIn(title=p["title"], notes=p.get("reason"), priority=int(p.get("priority", 2))),
         source="ai",
         source_ref=f"summary:{summary.id}",
+        user_id=summary.user_id,
     )

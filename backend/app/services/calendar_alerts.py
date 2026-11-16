@@ -155,7 +155,7 @@ async def tick(db: AsyncSession, now: datetime | None = None) -> dict:
                 continue
             minutes = max(1, round((start - now).total_seconds() / 60))
             title = f"Через {minutes} мин: {e['title']}"
-            await push.notify_all(db, title, _describe(e), url="/calendar", tag=f"cal-{e['id']}")
+            await push.notify_owner(db, title, _describe(e), url="/calendar", tag=f"cal-{e['id']}")
             await telegram_bot.send_to_owner(f"📅 {title}\n{_describe(e)}")
             reminded[e["id"]] = e["start"]
             stats["reminded"] += 1
@@ -186,7 +186,7 @@ async def tick(db: AsyncSession, now: datetime | None = None) -> dict:
                     if _as_dt(e["start"]) > prev_horizon or e.get("source") in fresh_sources:
                         continue
                     lines.append(f"➕ {e['title']}\n   {_describe(e)}")
-                    await push.notify_all(
+                    await push.notify_owner(
                         db, f"Новое: {e['title']}", _describe(e), url="/calendar", tag=f"cal-new-{eid}"
                     )
                     stats["added"] += 1
@@ -196,7 +196,7 @@ async def tick(db: AsyncSession, now: datetime | None = None) -> dict:
                     was = _when({**old}) if "start" in diff or "end" in diff else None
                     note = f" (было {was})" if was else ""
                     lines.append(f"✏️ {e['title']}\n   {_describe(e)}{note}")
-                    await push.notify_all(
+                    await push.notify_owner(
                         db,
                         f"Изменено: {e['title']}",
                         _describe(e) + note,
@@ -212,7 +212,7 @@ async def tick(db: AsyncSession, now: datetime | None = None) -> dict:
                 if old.get("source") and old["source"] not in sources:
                     continue  # the provider was disconnected, nothing was cancelled
                 lines.append(f"❌ Отменено: {old['title']}\n   {_describe(old)}")
-                await push.notify_all(
+                await push.notify_owner(
                     db, f"Отменено: {old['title']}", _describe(old), url="/calendar", tag=f"cal-del-{eid}"
                 )
                 stats["removed"] += 1

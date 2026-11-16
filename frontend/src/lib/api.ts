@@ -29,8 +29,8 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
   const res = await fetch(path, { ...init, headers });
-  // a wrong password is a 401 too, but it must not look like an expired session
-  if (res.status === 401 && path !== "/api/auth/login") {
+  // a wrong password or login code is a 401 too, but it must not look like an expired session
+  if (res.status === 401 && path !== "/api/auth/login" && path !== "/api/auth/telegram") {
     setToken(null);
     window.dispatchEvent(new Event("dash:logout"));
     throw new ApiError(401, "Нужно войти");
@@ -49,6 +49,15 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   return (await res.json()) as T;
 }
 
+/** Offline copies of API responses belong to whoever was logged in: drop them on login and logout. */
+export async function clearApiCache() {
+  try {
+    await caches?.delete("api");
+  } catch {
+    /* no Cache Storage */
+  }
+}
+
 export const get = <T>(p: string) => api<T>(p);
 export const post = <T>(p: string, body?: unknown) =>
   api<T>(p, { method: "POST", body: body === undefined ? undefined : JSON.stringify(body) });
@@ -63,6 +72,8 @@ export interface LoginEvent {
   ip: string;
   user_agent: string | null;
   result: "ok" | "failed" | "blocked";
+  user?: string;
+  method?: string;
 }
 
 export interface SecurityInfo {
@@ -73,13 +84,19 @@ export interface SecurityInfo {
   window_minutes: number;
 }
 
-export interface BotGuest {
+export interface BotUser {
   id: number;
+  telegram_id: number | null;
   name: string;
   username: string;
-  added_at: string;
+  role: string;
+  level: "workspace" | "media";
+  created_at: string;
   jobs: number;
   cost_rub: number;
+  chats: number;
+  summaries: number;
+  tasks: number;
 }
 
 export type TaskStatus = "todo" | "doing" | "done";

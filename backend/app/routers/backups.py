@@ -10,12 +10,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import require_auth
+from app.auth import require_owner
 from app.db import get_db
 from app.models import BackupPlan, BackupRun, Project, Server
 from app.services import backups as svc
 
-router = APIRouter(prefix="/api", tags=["backups"], dependencies=[Depends(require_auth)])
+router = APIRouter(prefix="/api", tags=["backups"], dependencies=[Depends(require_owner)])
 
 ItemType = Literal["path", "pg_dump", "mysql_dump", "docker_volume", "clickhouse"]
 

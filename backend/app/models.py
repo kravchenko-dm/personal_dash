@@ -10,10 +10,36 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+OWNER_ID = 1  # the dashboard owner's row in `users`, created by migration 0007
+
+
+class User(Base):
+    """Someone who may use the bot. The owner (id 1) has everything; a member with level "workspace" has
+    their own tasks, chats, summaries and digests; level "media" may only transcribe recordings."""
+
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    telegram_id: Mapped[int | None] = mapped_column(BigInteger, unique=True, nullable=True)
+    name: Mapped[str] = mapped_column(String(100), default="")
+    username: Mapped[str] = mapped_column(String(64), default="")
+    role: Mapped[str] = mapped_column(String(10), default="member")  # owner | member
+    level: Mapped[str] = mapped_column(String(10), default="media")  # media | workspace
+    token_epoch: Mapped[int] = mapped_column(BigInteger, default=0)  # this user's "log out everywhere"
+    evening_digest: Mapped[bool] = mapped_column(Boolean, default=True)
+    morning_brief: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+def _owner_fk() -> Mapped[int]:
+    return mapped_column(ForeignKey("users.id", ondelete="CASCADE"), default=OWNER_ID, index=True)
+
+
 class Task(Base):
     __tablename__ = "tasks"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = _owner_fk()
     title: Mapped[str] = mapped_column(String(500))
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="todo")  # todo | doing | done
@@ -61,6 +87,7 @@ class PushSubscription(Base):
     __tablename__ = "push_subscriptions"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = _owner_fk()
     endpoint: Mapped[str] = mapped_column(Text, unique=True)
     keys: Mapped[dict] = mapped_column(JSON)  # {p256dh, auth}
     user_agent: Mapped[str | None] = mapped_column(String(300), nullable=True)
@@ -74,6 +101,7 @@ class TelegramChat(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     chat_id: Mapped[int] = mapped_column(BigInteger, unique=True)
+    user_id: Mapped[int] = _owner_fk()  # who added the bot: their summaries and digests read this chat
     title: Mapped[str] = mapped_column(String(300), default="")
     kind: Mapped[str] = mapped_column(String(20), default="group")  # private | group | supergroup
     collect: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -99,6 +127,7 @@ class Summary(Base):
     __tablename__ = "summaries"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = _owner_fk()
     chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
     project_id: Mapped[int | None] = mapped_column(
         ForeignKey("projects.id", ondelete="SET NULL"), nullable=True, index=True
@@ -366,6 +395,10 @@ class LoginEvent(Base):
     ip: Mapped[str] = mapped_column(String(64), index=True)
     user_agent: Mapped[str | None] = mapped_column(String(300), nullable=True)
     result: Mapped[str] = mapped_column(String(12))  # ok | failed | blocked
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    method: Mapped[str] = mapped_column(String(12), default="password")  # password | telegram
 
 
 class MediaJob(Base):
