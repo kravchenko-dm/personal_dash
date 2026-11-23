@@ -126,6 +126,10 @@ export default function Settings({ onLogout, onMe }: { onLogout: () => void; onM
         <span>📝 Саммари и чаты Telegram</span>
         <span className="muted">›</span>
       </Link>
+      <Link to="/collector" className="card clickable row between" style={{ display: "flex" }}>
+        <span>📥 Сборщик запросов: почта, MAX</span>
+        <span className="muted">›</span>
+      </Link>
       {owner && (
         <>
       <Link to="/settings/backups" className="card clickable row between" style={{ display: "flex" }}>

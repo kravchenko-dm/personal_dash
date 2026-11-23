@@ -14,6 +14,7 @@ import Settings from "./pages/Settings";
 import Projects from "./pages/Projects";
 import ProjectPage from "./pages/ProjectPage";
 import BackupSettings from "./pages/BackupSettings";
+import Collector from "./pages/Collector";
 
 const MEMBER_NAV = [
   { to: "/", ic: "🏠", label: "Главная" },
@@ -76,6 +77,7 @@ export default function App() {
             </>
           )}
           <Route path="/summaries" element={<Summaries />} />
+          <Route path="/collector" element={<Collector />} />
           <Route
             path="/settings"
             element={

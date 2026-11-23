@@ -14,6 +14,7 @@ from app.routers import (
     backups,
     balances,
     calendar,
+    collector,
     monitoring,
     projects,
     push,
@@ -23,7 +24,7 @@ from app.routers import (
     telegram,
     yougile,
 )
-from app.services import bot_access, scheduler, security, telegram_bot
+from app.services import bot_access, max_collector, scheduler, security, telegram_bot
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 # chatty third-party loggers: one line per job run / HTTP request / Apple icalendar quirk
@@ -66,8 +67,13 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         log.exception("telegram setup failed: %s", exc)
     scheduler.start()
+    try:
+        await max_collector.startup()
+    except Exception as exc:
+        log.exception("max collector startup failed: %s", exc)
     yield
     scheduler.stop()
+    await max_collector.shutdown()
     await telegram_bot.shutdown()
 
 
@@ -105,5 +111,6 @@ for r in (
     monitoring,
     agent,
     backups,
+    collector,
 ):
     app.include_router(r.router)

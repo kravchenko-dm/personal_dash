@@ -187,6 +187,18 @@ async def job_cleanup_samples() -> None:
         await monitoring.cleanup_old_samples(db)
 
 
+async def job_mail_collect() -> None:
+    from app.services import mail_collector
+
+    await mail_collector.collect_all()
+
+
+async def job_max_watchdog() -> None:
+    from app.services import max_collector
+
+    await max_collector.watchdog()
+
+
 def start() -> None:
     scheduler.add_job(job_refresh_balances, IntervalTrigger(minutes=30), id="balances", replace_existing=True)
     scheduler.add_job(job_task_reminders, IntervalTrigger(minutes=5), id="reminders", replace_existing=True)
@@ -210,6 +222,9 @@ def start() -> None:
     scheduler.add_job(
         job_cleanup_samples, CronTrigger(hour=3, minute=30), id="cleanup_samples", replace_existing=True
     )
+    # request collector: supplier mail, restarting dead MAX clients
+    scheduler.add_job(job_mail_collect, IntervalTrigger(minutes=2), id="mail_collect", replace_existing=True)
+    scheduler.add_job(job_max_watchdog, IntervalTrigger(minutes=1), id="max_watchdog", replace_existing=True)
     scheduler.start()
     log.info("scheduler started (%s)", get_settings().tz)
 

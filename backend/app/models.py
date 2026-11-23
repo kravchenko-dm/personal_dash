@@ -1,6 +1,17 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -424,3 +435,73 @@ class MediaJob(Base):
     translations: Mapped[dict] = mapped_column(JSON, default=dict)
     # speaker label from the diarizing STT ("1:S0") -> name the summary gave them ("Ведущий")
     speakers: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+# ---------- request collector: mail from suppliers, private MAX messages ----------
+
+
+def _user_fk(**kw) -> Mapped[int]:
+    return mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True, **kw)
+
+
+class MailAccount(Base):
+    """A user's IMAP mailbox (Mail.ru by default), read-only; new mail from their suppliers goes to the bot."""
+
+    __tablename__ = "mail_accounts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = _user_fk(unique=True)
+    host: Mapped[str] = mapped_column(String(200), default="imap.mail.ru")
+    port: Mapped[int] = mapped_column(Integer, default=993)
+    login: Mapped[str] = mapped_column(String(200))
+    password: Mapped[str] = mapped_column(String(300))  # an app password; never returned by the API
+    folder: Mapped[str] = mapped_column(String(200), default="INBOX")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    uidvalidity: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    last_uid: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # None: not read yet
+    last_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    errors: Mapped[int] = mapped_column(Integer, default=0)  # failures in a row
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class MailRule(Base):
+    """A supplier: mail from any of `patterns` ("ivan@x.ru" or "@supplier.ru") is forwarded."""
+
+    __tablename__ = "mail_rules"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = _user_fk()
+    name: Mapped[str] = mapped_column(String(100))
+    patterns: Mapped[list] = mapped_column(JSON, default=list)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class MaxAccount(Base):
+    """A user's MAX account connected by QR; the session itself lives in /app/data/max/<user_id>/."""
+
+    __tablename__ = "max_accounts"
+
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    status: Mapped[str] = mapped_column(String(20), default="off")  # off|waiting_qr|online|error|logged_out
+    me_name: Mapped[str] = mapped_column(String(200), default="")
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class InboxItem(Base):
+    """Something the collector forwarded to the bot (a supplier's mail, a MAX message)."""
+
+    __tablename__ = "inbox_items"
+    __table_args__ = (UniqueConstraint("user_id", "source", "external_id", name="uq_inbox_items_source"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = _user_fk()
+    source: Mapped[str] = mapped_column(String(10))  # mail | max
+    external_id: Mapped[str] = mapped_column(String(300))
+    sender: Mapped[str] = mapped_column(String(200), default="")  # supplier or contact name
+    subject: Mapped[str] = mapped_column(String(500), default="")
+    text: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)

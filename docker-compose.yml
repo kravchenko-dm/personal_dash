@@ -25,6 +25,9 @@ services:
         condition: service_healthy
     expose:
       - "8000"
+    volumes:
+      # MAX sessions of the request collector (services/max_collector.py)
+      - backend_data:/app/data
 
   frontend:
     build:
@@ -78,6 +81,7 @@ services:
       - caddy
 
 volumes:
+  backend_data:
   pgdata:
   caddy_data:
   caddy_config:

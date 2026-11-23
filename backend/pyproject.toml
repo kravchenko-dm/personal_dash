@@ -24,6 +24,7 @@ dependencies = [
     "icalendar>=5",
     "alembic>=1.13",
     "yt-dlp[default]>=2026.10",  # upgrades itself at runtime when a site breaks it (services/media.py)
+    "maxapi-python>=2.5,<3",  # MAX user client (unofficial API): private messages for the request collector
 ]
 
 [project.optional-dependencies]

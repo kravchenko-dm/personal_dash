@@ -465,3 +465,40 @@ export interface BackupDestination {
   env_keys: string[];
   configured: boolean;
 }
+
+// ---------- request collector ----------
+
+export interface MailAccount {
+  host: string;
+  port: number;
+  login: string;
+  folder: string;
+  enabled: boolean;
+  has_password: boolean;
+  ready: boolean;
+  last_check_at: string | null;
+  last_error: string;
+}
+
+export interface MailRule {
+  id: number;
+  name: string;
+  patterns: string[];
+  enabled: boolean;
+}
+
+export interface MailState {
+  account: MailAccount | null;
+  rules: MailRule[];
+}
+
+export interface MaxStatus {
+  status: "off" | "connecting" | "waiting_qr" | "waiting_password" | "online" | "error" | "logged_out";
+  enabled: boolean;
+  me_name: string;
+  last_error: string;
+  connected_at: string | null;
+  running: boolean;
+  qr_svg: string | null;
+  password_hint: string | null;
+}

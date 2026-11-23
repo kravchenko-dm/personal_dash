@@ -191,16 +191,31 @@ async def update(db: AsyncSession, user_id: int, **fields) -> Account | None:
 
 
 async def remove(db: AsyncSession, user_id: int) -> bool:
-    """Deletes a member and everything that is theirs (tasks, chats, summaries cascade)."""
+    """Deletes a member and everything that is theirs (tasks, chats, summaries, collector sources)."""
     row = await db.get(User, user_id)
     if row is None or row.role == "owner":
         return False
-    from app.models import MediaJob, PushSubscription, Summary, Task, TelegramChat, TelegramMessage
+    from app.models import (
+        InboxItem,
+        MailAccount,
+        MailRule,
+        MaxAccount,
+        MediaJob,
+        PushSubscription,
+        Summary,
+        Task,
+        TelegramChat,
+        TelegramMessage,
+    )
+    from app.services import max_collector
+
+    await max_collector.forget(user_id)  # stops the MAX client and wipes its session files
 
     # explicit deletes: SQLite does not enforce ON DELETE CASCADE without a pragma
     chat_ids = select(TelegramChat.chat_id).where(TelegramChat.user_id == user_id)
     await db.execute(delete(TelegramMessage).where(TelegramMessage.chat_id.in_(chat_ids)))
-    for model in (TelegramChat, Summary, Task, PushSubscription):
+    owned = (TelegramChat, Summary, Task, PushSubscription, MailAccount, MailRule, MaxAccount, InboxItem)
+    for model in owned:
         await db.execute(delete(model).where(model.user_id == user_id))
     if row.telegram_id is not None:
         await db.execute(delete(MediaJob).where(MediaJob.chat_id == row.telegram_id))

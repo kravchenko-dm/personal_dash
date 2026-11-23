@@ -109,7 +109,9 @@ WORKSPACE_HELP = (
     "/digest [часов] — саммари по всем вашим чатам\n"
     "/tasks — открытые задачи\n"
     "/add текст — добавить задачу\n"
-    "/done id — закрыть задачу\n\n" + GUEST_HELP
+    "/done id — закрыть задачу\n\n"
+    "Сборщик запросов (в веб-кабинете → Ещё → Сборщик): письма от ваших поставщиков и личные "
+    "сообщения MAX приходят сюда с кнопкой «➕ в задачи».\n\n" + GUEST_HELP
 )
 
 LEVEL_NAMES = {"workspace": "свой кабинет", "media": "только расшифровка"}
@@ -489,8 +491,9 @@ async def setup() -> None:
         return
     _bot = Bot(token=s.telegram_bot_token)
     _dp = Dispatcher()
-    from app.services import telegram_media
+    from app.services import inbox, telegram_media
 
+    _dp.include_router(inbox.router)
     _dp.include_router(telegram_media.router)  # first: links in the private chat must not be "collected"
     _dp.include_router(router)
     me = await _bot.get_me()
